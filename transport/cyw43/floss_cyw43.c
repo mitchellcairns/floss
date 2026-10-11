@@ -60,7 +60,7 @@ void cyw43_bluetooth_hci_process(void) {
     s_rx_pending = true;
 }
 
-static floss_err_t cyw43_open(floss_transport_t *t) {
+static floss_err_t floss_cyw43_open(floss_transport_t *t) {
     FLOSS_UNUSED(t);
     int rc = cyw43_bluetooth_hci_init();
     if (rc != 0) {
@@ -73,12 +73,12 @@ static floss_err_t cyw43_open(floss_transport_t *t) {
     return FLOSS_OK;
 }
 
-static void cyw43_close(floss_transport_t *t) {
+static void floss_cyw43_close(floss_transport_t *t) {
     FLOSS_UNUSED(t);
     s_rx_pending = false;
 }
 
-static floss_err_t cyw43_send(floss_transport_t *t, uint8_t type, uint8_t *pkt, uint16_t len) {
+static floss_err_t floss_cyw43_send(floss_transport_t *t, uint8_t type, uint8_t *pkt, uint16_t len) {
     FLOSS_UNUSED(t);
     uint8_t *frame = pkt - CYW43_BT_HDR_LEN;
     size_t frame_len = (size_t)len + CYW43_BT_HDR_LEN;
@@ -105,7 +105,7 @@ static floss_err_t cyw43_send(floss_transport_t *t, uint8_t type, uint8_t *pkt, 
     return FLOSS_OK;
 }
 
-static int cyw43_poll(floss_transport_t *t) {
+static int floss_cyw43_poll(floss_transport_t *t) {
     uint32_t now = floss_hal_time_us();
     if (!s_rx_pending && floss_time_diff(now, s_last_read_us) < (int32_t)CYW43_RX_SAFETY_POLL_US) {
         return 0;
@@ -147,10 +147,10 @@ static int cyw43_poll(floss_transport_t *t) {
 static const floss_transport_ops_t k_cyw43_ops = {
     .name = "cyw43",
     .headroom = CYW43_BT_HDR_LEN,
-    .open = cyw43_open,
-    .close = cyw43_close,
-    .send = cyw43_send,
-    .poll = cyw43_poll,
+    .open = floss_cyw43_open,
+    .close = floss_cyw43_close,
+    .send = floss_cyw43_send,
+    .poll = floss_cyw43_poll,
 };
 
 floss_transport_t *floss_cyw43_transport(void) {
