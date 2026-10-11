@@ -61,7 +61,12 @@ typedef enum {
     FLOSS_GAP_EVT_PASSKEY_DISPLAY,    /**< (handle, passkey) */
     FLOSS_GAP_EVT_RSSI,               /**< (handle, rssi) result of floss_gap_read_rssi */
     FLOSS_GAP_EVT_HARDWARE_ERROR,     /**< controller reported a hardware error (status=code) */
+    FLOSS_GAP_EVT_INQUIRY_RESULT,     /**< a device answered our inquiry: (addr, cod, rssi, eir/eir_len) */
+    FLOSS_GAP_EVT_INQUIRY_COMPLETE,   /**< inquiry over (status; 0 also when cancelled). Exactly one per start. */
 } floss_gap_evt_type_t;
+
+/** INQUIRY_RESULT rssi value when the controller did not report one (standard Inquiry Result). */
+#define FLOSS_GAP_RSSI_UNKNOWN 127
 
 typedef struct {
     floss_gap_evt_type_t type;
@@ -71,8 +76,16 @@ typedef struct {
     uint8_t mode;       /**< MODE_CHANGE: FLOSS_LINK_MODE_*; ROLE_CHANGE: role */
     uint16_t interval;  /**< MODE_CHANGE: sniff interval (slots) */
     uint32_t passkey;   /**< USER_CONFIRM / PASSKEY_DISPLAY */
-    int8_t rssi;        /**< RSSI */
+    int8_t rssi;        /**< RSSI (INQUIRY_RESULT: FLOSS_GAP_RSSI_UNKNOWN if not reported) */
     bool encrypted;     /**< ENCRYPTION_CHANGE */
+    uint32_t cod;       /**< INQUIRY_RESULT: the device's Class of Device */
+    /**
+     * INQUIRY_RESULT: the device's Extended Inquiry Response (name, service
+     * UUIDs...) as [len][type][data] structures, valid during the callback
+     * only; NULL / 0 when the device sent none. Parse with floss_gap_eir_find().
+     */
+    const uint8_t *eir;
+    uint8_t eir_len;
 } floss_gap_evt_t;
 
 typedef void (*floss_gap_evt_fn)(const floss_gap_evt_t *evt, void *user);
@@ -111,6 +124,51 @@ floss_err_t floss_gap_update_eir(void);
 
 /** Add a 16-bit service UUID to the EIR (SDP calls this per record). */
 floss_err_t floss_gap_eir_add_uuid16(uint16_t uuid);
+
+/**
+ * Add a 128-bit service UUID to the EIR (Complete List of 128-bit Service
+ * UUIDs, type 0x07). uuid_be: 16 bytes, big-endian as written. Up to
+ * FLOSS_GAP_EIR_MAX_UUID128 (2).
+ */
+floss_err_t floss_gap_eir_add_uuid128(const uint8_t uuid_be[16]);
+
+/* EIR data types (shared with LE advertising data). */
+#define FLOSS_EIR_UUID16_SOME   0x02
+#define FLOSS_EIR_UUID16_ALL    0x03
+#define FLOSS_EIR_UUID128_SOME  0x06
+#define FLOSS_EIR_UUID128_ALL   0x07
+#define FLOSS_EIR_NAME_SHORT    0x08
+#define FLOSS_EIR_NAME_COMPLETE 0x09
+
+/**
+ * Find the first [len][type][data] structure of `type` in EIR (or LE
+ * advertising) data. Returns its payload and length, or NULL. Malformed
+ * data (a length running past the end) ends the search safely.
+ */
+const uint8_t *floss_gap_eir_find(const uint8_t *eir, uint8_t len, uint8_t type, uint8_t *out_len);
+
+/** True if the EIR lists this 128-bit service UUID (complete or incomplete list). uuid_be as written. */
+bool floss_gap_eir_has_uuid128(const uint8_t *eir, uint8_t len, const uint8_t uuid_be[16]);
+
+/* ------------------------------------------------------------------------ */
+/* Discovery (central side: finding devices)                                */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Start a general inquiry (GIAC). Every answer arrives as
+ * FLOSS_GAP_EVT_INQUIRY_RESULT (the controller may report a device more
+ * than once); the end as FLOSS_GAP_EVT_INQUIRY_COMPLETE.
+ *
+ * duration_1_28s: 1..48 (x 1.28 s). max_results: stop after this many
+ * answers (0 = unlimited). Paging is not possible while an inquiry runs:
+ * cancel it first. A later floss_gap_connect() to a device seen here uses
+ * the page scan mode and clock offset it reported (much faster page).
+ */
+floss_err_t floss_gap_inquiry_start(uint8_t duration_1_28s, uint8_t max_results);
+/** Stop a running inquiry; INQUIRY_COMPLETE (status 0) follows. */
+floss_err_t floss_gap_inquiry_cancel(void);
+/** True between floss_gap_inquiry_start() and INQUIRY_COMPLETE. */
+bool floss_gap_inquiry_active(void);
 
 /* ------------------------------------------------------------------------ */
 /* Connections                                                              */

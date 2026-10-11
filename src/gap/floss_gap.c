@@ -376,6 +376,7 @@ void floss_gap_on_hci_ready(void)
             link_free(&s_gap.link[i]);
         }
     }
+    floss_gap_inquiry_init(); /* a reset controller runs no inquiry */
     s_gap.ready = false;
     s_gap.applying = true;
     s_gap.step = STEP_SIMPLE_PAIRING;
@@ -401,6 +402,7 @@ void floss_gap_init(void)
 
     floss_gap_sec_init();
     floss_gap_eir_init();
+    floss_gap_inquiry_init();
     floss_gap_bonds_load();
 }
 
@@ -494,18 +496,26 @@ floss_err_t floss_gap_connect(const floss_addr_t *addr)
     if (floss_gap_link_by_addr(addr)) {
         return FLOSS_ERR_STATE; /* already connected or connecting */
     }
+    if (floss_gap_inquiry_active()) {
+        return FLOSS_ERR_BUSY; /* controllers cannot page while inquiring: cancel first */
+    }
     floss_gap_link_t *l = floss_gap_link_get(addr);
     if (!l) {
         return FLOSS_ERR_NOMEM;
     }
     l->outgoing = true;
 
+    /* A recent inquiry answer tells us how and when the device scans. */
+    uint8_t psrm = GAP_PSCAN_REP_MODE_R1;
+    uint16_t clock_offset = 0; /* unknown */
+    (void)floss_gap_inquiry_page_hint(addr, &psrm, &clock_offset);
+
     uint8_t p[13];
     memcpy(&p[0], addr->b, 6);
     floss_put_le16(&p[6], GAP_ACL_PACKET_TYPES);
-    p[8] = GAP_PSCAN_REP_MODE_R1;
+    p[8] = psrm;
     p[9] = 0x00;                 /* reserved */
-    floss_put_le16(&p[10], 0);   /* clock offset unknown */
+    floss_put_le16(&p[10], clock_offset);
     p[12] = 0x01;                /* allow role switch: the host may become central */
     floss_err_t err = floss_hci_cmd(FLOSS_HCI_CREATE_CONNECTION, p, sizeof(p), create_conn_done, l);
     if (err != FLOSS_OK) {
@@ -851,6 +861,9 @@ static void on_role_change(const uint8_t *p, uint8_t len)
 void floss_gap_on_hci_event(uint8_t code, const uint8_t *params, uint8_t len)
 {
     if (floss_gap_sec_on_event(code, params, len)) {
+        return;
+    }
+    if (floss_gap_inquiry_on_event(code, params, len)) {
         return;
     }
     switch (code) {

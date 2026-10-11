@@ -1015,6 +1015,138 @@ static void cmd_create_connection(uint16_t op, const uint8_t *p) {
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* Inquiry (remote devices answering a discovery)                           */
+/* ------------------------------------------------------------------------ */
+/*
+ * Kept in its own state block (sim_inq) so it stays independent of the rest.
+ * HCI Inquiry: Command Status, then one result per registered responder
+ * (format by Write Inquiry Mode: 0 Inquiry Result, 1 with RSSI, 2 Extended
+ * Inquiry Result when the responder has EIR data), then Inquiry Complete
+ * after Inquiry_Length x 1.28 s of fake time. Inquiry Cancel ends it with a
+ * Command Complete and no Inquiry Complete, as the specification says.
+ * Without responders the old behaviour is kept: Inquiry Complete at once.
+ */
+static struct {
+    floss_sim_inquiry_responder_t r[FLOSS_SIM_MAX_INQUIRY_RESPONDERS];
+    uint8_t mode;           /* Write Inquiry Mode */
+    bool active;
+    uint32_t complete_due;
+    uint32_t inquiries;     /* HCI Inquiry commands accepted */
+} sim_inq;
+
+floss_sim_inquiry_responder_t *floss_sim_inquiry_add(const floss_addr_t *addr, uint32_t cod, int8_t rssi,
+                                                     const uint8_t *eir, uint8_t eir_len) {
+    floss_sim_inquiry_responder_t *slot = NULL;
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_INQUIRY_RESPONDERS && !slot; i++) {
+        if (sim_inq.r[i].in_use && floss_addr_eq(&sim_inq.r[i].addr, addr)) {
+            slot = &sim_inq.r[i];
+        }
+    }
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_INQUIRY_RESPONDERS && !slot; i++) {
+        if (!sim_inq.r[i].in_use) {
+            slot = &sim_inq.r[i];
+        }
+    }
+    if (!slot) {
+        FLOSS_LOGE(TRANSPORT, "sim: inquiry responder table full");
+        return NULL;
+    }
+    memset(slot, 0, sizeof *slot);
+    slot->in_use = true;
+    slot->addr = *addr;
+    slot->cod = cod;
+    slot->rssi = rssi;
+    slot->clock_offset = 0x1234;
+    slot->eir_len = (uint8_t)FLOSS_MIN(eir_len, (uint8_t)sizeof slot->eir);
+    if (eir && slot->eir_len) {
+        memcpy(slot->eir, eir, slot->eir_len);
+    }
+    floss_sim_peer_add(addr, cod); /* it is also a device the stack can page */
+    return slot;
+}
+
+void floss_sim_inquiry_clear(void) {
+    memset(sim_inq.r, 0, sizeof sim_inq.r);
+}
+
+bool floss_sim_inquiry_active(void) {
+    return sim_inq.active;
+}
+
+uint32_t floss_sim_inquiry_count(void) {
+    return sim_inq.inquiries;
+}
+
+static void inquiry_emit_result(const floss_sim_inquiry_responder_t *r) {
+    sim_w_t w = {.n = 0};
+    w_u8(&w, 1); /* Num_Responses */
+    w_addr(&w, &r->addr);
+    w_u8(&w, 0x01); /* page scan repetition mode R1 */
+    if (sim_inq.mode == 2 && r->eir_len) {
+        uint8_t eir[240] = {0};
+        memcpy(eir, r->eir, r->eir_len);
+        w_u8(&w, 0); /* reserved */
+        w_bytes(&w, (const uint8_t[3]){(uint8_t)r->cod, (uint8_t)(r->cod >> 8), (uint8_t)(r->cod >> 16)}, 3);
+        w_u16(&w, r->clock_offset);
+        w_u8(&w, (uint8_t)r->rssi);
+        w_bytes(&w, eir, sizeof eir);
+        emit_w(FLOSS_EVT_EXTENDED_INQUIRY_RESULT, &w);
+    } else if (sim_inq.mode >= 1) {
+        w_u8(&w, 0); /* reserved */
+        w_bytes(&w, (const uint8_t[3]){(uint8_t)r->cod, (uint8_t)(r->cod >> 8), (uint8_t)(r->cod >> 16)}, 3);
+        w_u16(&w, r->clock_offset);
+        w_u8(&w, (uint8_t)r->rssi);
+        emit_w(FLOSS_EVT_INQUIRY_RESULT_WITH_RSSI, &w);
+    } else {
+        w_u16(&w, 0); /* reserved (2 bytes) */
+        w_bytes(&w, (const uint8_t[3]){(uint8_t)r->cod, (uint8_t)(r->cod >> 8), (uint8_t)(r->cod >> 16)}, 3);
+        w_u16(&w, r->clock_offset);
+        emit_w(FLOSS_EVT_INQUIRY_RESULT, &w);
+    }
+}
+
+static void cmd_inquiry(uint16_t op, const uint8_t *p) {
+    if (sim_inq.active) {
+        emit_cs(op, SIM_ERR_COMMAND_DISALLOWED);
+        return;
+    }
+    emit_cs(op, 0);
+    sim_inq.inquiries++;
+    uint8_t max = p[4];
+    uint8_t sent = 0;
+    bool any = false;
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_INQUIRY_RESPONDERS; i++) {
+        floss_sim_inquiry_responder_t *r = &sim_inq.r[i];
+        if (!r->in_use) {
+            continue;
+        }
+        any = true;
+        if ((max == 0 || sent < max) && !link_by_addr(&r->addr)) {
+            inquiry_emit_result(r); /* a connected device does not answer inquiries */
+            sent++;
+        }
+    }
+    if (!any) {
+        sim_w_t w = {.n = 0};
+        w_u8(&w, 0);
+        emit_w(FLOSS_EVT_INQUIRY_COMPLETE, &w);
+        return;
+    }
+    sim_inq.active = true;
+    sim_inq.complete_due = floss_hal_time_us() + (uint32_t)p[3] * 1280000u;
+}
+
+/** sim_tick part: the inquiry ran its length. */
+static void inquiry_tick(uint32_t now) {
+    if (sim_inq.active && floss_time_diff(now, sim_inq.complete_due) >= 0) {
+        sim_inq.active = false;
+        sim_w_t w = {.n = 0};
+        w_u8(&w, 0);
+        emit_w(FLOSS_EVT_INQUIRY_COMPLETE, &w);
+    }
+}
+
 /* OGF 0x01: link control */
 static bool cmd_link_control(uint16_t op, const uint8_t *p, uint8_t n) {
     sim_link_t *l;
@@ -1023,9 +1155,12 @@ static bool cmd_link_control(uint16_t op, const uint8_t *p, uint8_t n) {
     switch (op) {
     case FLOSS_HCI_INQUIRY:
         NEED(5, true);
-        emit_cs(op, 0);
-        w_u8(&w, 0);
-        emit_w(FLOSS_EVT_INQUIRY_COMPLETE, &w);
+        cmd_inquiry(op, p);
+        return true;
+
+    case FLOSS_HCI_INQUIRY_CANCEL:
+        emit_cc_status(op, sim_inq.active ? 0 : SIM_ERR_COMMAND_DISALLOWED);
+        sim_inq.active = false;
         return true;
 
     case FLOSS_HCI_CREATE_CONNECTION:
@@ -1380,6 +1515,11 @@ static bool cmd_baseband(uint16_t op, const uint8_t *p, uint8_t n) {
         emit_cc(op, &w);
         return true;
     }
+
+    case FLOSS_HCI_WRITE_INQUIRY_MODE:
+        NEED(1, false);
+        sim_inq.mode = p[0];
+        break;
 
     case FLOSS_HCI_WRITE_SCAN_ENABLE:
         NEED(1, false);
@@ -1874,6 +2014,8 @@ static void sim_rx_acl(const uint8_t *pkt, uint16_t len) {
  */
 static void sim_tick(void) {
     uint32_t now = floss_hal_time_us();
+
+    inquiry_tick(now);
 
     for (unsigned i = 0; i < FLOSS_SIM_MAX_LINKS; i++) {
         sim_link_t *l = &sim.links[i];
@@ -2749,6 +2891,8 @@ static void controller_reset(void) {
     sim.le_connecting = false;
     memset(&sim.le_scan, 0, sizeof sim.le_scan);
     sim.gatt.active = false; /* its link vanished with the others */
+    sim_inq.mode = 0;
+    sim_inq.active = false;
 }
 
 static floss_err_t sim_open(floss_transport_t *t) {
@@ -2849,6 +2993,7 @@ void floss_sim_config_defaults(floss_sim_config_t *cfg) {
 
 floss_transport_t *floss_sim_init(const floss_sim_config_t *cfg) {
     memset(&sim, 0, sizeof sim);
+    memset(&sim_inq, 0, sizeof sim_inq);
     if (cfg) {
         sim.cfg = *cfg;
     } else {

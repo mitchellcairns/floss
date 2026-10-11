@@ -51,6 +51,7 @@ typedef enum {
     FLOSS_MOD_LE,      /* LE GAP, ATT, GATT, HID-over-GATT */
     FLOSS_MOD_SMP,
     FLOSS_MOD_RFCOMM,
+    FLOSS_MOD_LINK,    /* pad <-> dongle link profile (floss_link.h) */
     FLOSS_MOD_COUNT
 } floss_mod_t;
 

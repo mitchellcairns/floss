@@ -58,6 +58,9 @@
 #if FLOSS_ENABLE_RFCOMM
 #include "floss_rfcomm.h"
 #endif
+#if FLOSS_ENABLE_LINK
+#include "floss_link.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
