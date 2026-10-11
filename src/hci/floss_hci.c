@@ -124,7 +124,11 @@ floss_err_t floss_hci_transport_send(uint8_t type, uint8_t *pkt, uint16_t len) {
     floss_transport_t *t = G.transport;
 
     FLOSS_DBG_PIN(FLOSS_DBG_PIN_TRANS_TX, 1);
+#if FLOSS_ENABLE_STATS
+    uint32_t t0 = floss_hal_time_us();
+#endif
     floss_err_t err = t->ops->send(t, type, pkt, len);
+    FLOSS_STAT_HIST(transport_send_time, floss_hal_time_us() - t0);
     FLOSS_DBG_PIN(FLOSS_DBG_PIN_TRANS_TX, 0);
 
     if (err == FLOSS_OK) {
@@ -713,7 +717,16 @@ void floss_hci_poll(void) {
     if (!G.started) {
         return;
     }
+#if FLOSS_ENABLE_STATS
+    uint32_t t0 = floss_hal_time_us();
+    int delivered = G.transport->ops->poll(G.transport);
+    if (delivered > 0) {
+        /* Only polls that moved data: idle polls would drown the signal. */
+        FLOSS_STAT_HIST(transport_poll_time, floss_hal_time_us() - t0);
+    }
+#else
     G.transport->ops->poll(G.transport);
+#endif
     /* Retry anything the transport refused (BUSY) earlier. */
     floss_hci_cmd_pump();
     floss_hci_acl_flush();

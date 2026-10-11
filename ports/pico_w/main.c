@@ -231,6 +231,24 @@ static void console_task(uint32_t now) {
 }
 
 /* One line every few seconds while connected: is the link healthy? */
+/*
+ * Loop profiler: worst-case time spent in each main-loop section since the
+ * last status line. When floss_stats() shows a large poll_gap or
+ * timer_lateness, this says WHICH part of the loop is responsible.
+ */
+enum { PROF_ASYNC, PROF_FLOSS, PROF_BOOTSEL, PROF_APP, PROF_LED, PROF_CONSOLE, PROF_COUNT };
+static const char *const prof_names[PROF_COUNT] = {"cyw43", "floss", "bootsel", "app", "led", "console"};
+static uint32_t prof_max[PROF_COUNT];
+
+static inline uint32_t prof_mark(int section, uint32_t start) {
+    uint32_t end = time_us_32();
+    uint32_t d = end - start;
+    if (d > prof_max[section]) {
+        prof_max[section] = d;
+    }
+    return end;
+}
+
 static void status_task(uint32_t now) {
     static uint32_t last_t;
     static uint32_t last_sent;
@@ -251,6 +269,13 @@ static void status_task(uint32_t now) {
                (unsigned long)rate, (unsigned long)floss_hist_percentile(&st->acl_ack_latency, 50),
                (unsigned long)floss_hist_percentile(&st->acl_ack_latency, 99), (unsigned long)st->hid_send_deferred,
                (unsigned long)st->hid_reports_coalesced);
+    char line[96];
+    int n = 0;
+    for (int i = 0; i < PROF_COUNT && n < (int)sizeof(line); i++) {
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " %s %lu", prof_names[i], (unsigned long)prof_max[i]);
+        prof_max[i] = 0;
+    }
+    FLOSS_LOGI(APP, "loop max us:%s", line);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -341,20 +366,27 @@ int main(void) {
 
     uint32_t next_bootsel = time_us_32();
     for (;;) {
+        uint32_t t = time_us_32();
         async_context_poll(&async_ctx.core);
+        t = prof_mark(PROF_ASYNC, t);
         floss_poll();
+        t = prof_mark(PROF_FLOSS, t);
 
-        uint32_t now = time_us_32();
+        uint32_t now = t;
         if (floss_time_diff(now, next_bootsel) >= 0) {
             next_bootsel = now + BOOTSEL_PERIOD_US;
 #if !FLOSS_PICO_APP_LE
             gamepad_app_set_buttons(bootsel_pressed() ? 0x0001u : 0u);
 #endif
+            t = prof_mark(PROF_BOOTSEL, t);
         }
         app_task();
+        t = prof_mark(PROF_APP, t);
 
         led_task(now);
+        t = prof_mark(PROF_LED, t);
         console_task(now);
+        prof_mark(PROF_CONSOLE, t);
         status_task(now);
     }
 }

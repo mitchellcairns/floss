@@ -154,6 +154,10 @@ typedef struct {
     floss_hist_t acl_ack_latency; /**< ACL handed to transport -> Number Of
                                        Completed Packets. Reflects air time,
                                        retransmissions and sniff intervals. */
+    floss_hist_t transport_send_time; /**< duration of one transport send()
+                                           (bus cost per packet; blocks the loop) */
+    floss_hist_t transport_poll_time; /**< duration of a transport poll() that
+                                           delivered packets (bus cost of RX) */
 
     /* --- link -------------------------------------------------------------- */
     uint32_t connections;

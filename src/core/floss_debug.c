@@ -388,10 +388,10 @@ static void dump_counter(const char *name, uint32_t v)
 static void dump_hist(const char *name, const floss_hist_t *h)
 {
     if (h->count == 0) {
-        out("  %-18s %8s", name, "-");
+        out("  %-20s %8s", name, "-");
         return;
     }
-    out("  %-18s %8lu %8lu %8lu %8lu %8lu %8lu", name, (unsigned long)h->count, (unsigned long)h->min_us,
+    out("  %-20s %8lu %8lu %8lu %8lu %8lu %8lu", name, (unsigned long)h->count, (unsigned long)h->min_us,
         (unsigned long)(h->sum_us / h->count), (unsigned long)floss_hist_percentile(h, 50),
         (unsigned long)floss_hist_percentile(h, 99), (unsigned long)h->max_us);
 }
@@ -474,6 +474,16 @@ static void dump_hints(const floss_stats_t *s)
             hints++;
         }
     }
+    if (s->transport_send_time.count > 0 && s->transport_send_time.max_us > 500u) {
+        out("  transport_send_time max %luus -> the bus blocks the loop per packet; check bus clock / driver waits",
+            (unsigned long)s->transport_send_time.max_us);
+        hints++;
+    }
+    if (s->transport_poll_time.count > 0 && s->transport_poll_time.max_us > 500u) {
+        out("  transport_poll_time max %luus -> reading the controller is slow; consider capping packets per poll",
+            (unsigned long)s->transport_poll_time.max_us);
+        hints++;
+    }
     if (s->hid_send_deferred > 0 && s->hid_send_deferred * 10u > s->hid_reports_sent) {
         out("  hid_send_deferred high (%lu vs %lu sent) -> link saturated, lower report rate or set flush timeout",
             (unsigned long)s->hid_send_deferred, (unsigned long)s->hid_reports_sent);
@@ -547,9 +557,11 @@ void floss_stats_dump(void)
     out("-- run loop --");
     dump_counter("polls", s->polls);
     out("-- latency histograms (us) --");
-    out("  %-18s %8s %8s %8s %8s %8s %8s", "", "count", "min", "avg", "p50", "p99", "max");
+    out("  %-20s %8s %8s %8s %8s %8s %8s", "", "count", "min", "avg", "p50", "p99", "max");
     dump_hist("cmd_latency", &s->cmd_latency);
     dump_hist("acl_ack_latency", &s->acl_ack_latency);
+    dump_hist("transport_send_time", &s->transport_send_time);
+    dump_hist("transport_poll_time", &s->transport_poll_time);
     dump_hist("hid_report_age", &s->hid_report_age);
     dump_hist("hid_send_interval", &s->hid_send_interval);
     dump_hist("poll_gap", &s->poll_gap);
