@@ -121,6 +121,13 @@ void floss_rfcomm_init(void);
  */
 void floss_hid_poll(void);
 
+/**
+ * Forget the HID profile (called by floss_init()). A re-initialised stack
+ * runs without HID until floss_hid_init() is called again, instead of
+ * polling the previous session's channels.
+ */
+void floss_hid_reset(void);
+
 /* ===================== core ============================================== */
 
 void floss_debug_init(void);

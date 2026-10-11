@@ -254,7 +254,27 @@ TEST(unknown_cid_hook) {
     ASSERT_EQ(g_log.unknown_cid, 0);
 }
 
+TEST(reinit_without_hid_forgets_session) {
+    floss_transport_t *t = floss_tc_sim_init(NULL);
+    floss_tc_hid_config(&g_cfg, 1000);
+    start(t);
+    floss_sim_chan_t *ctrl, *intr;
+    (void)floss_tc_hid_session(&ctrl, &intr);
+    ASSERT_TRUE(floss_hid_connected());
+
+    /* The stack restarts without the HID profile (e.g. to call hosts from another address). */
+    floss_tc_stack_start(t, NULL);
+    ASSERT_EQ(floss_hid_state(), FLOSS_HID_STATE_IDLE);
+    ASSERT_FALSE(floss_hid_can_send_now());
+    ASSERT_EQ(floss_hid_handle(), 0xFFFF);
+    const uint8_t in[FLOSS_TC_INPUT_LEN] = {0};
+    ASSERT_EQ(floss_hid_send_input_now(FLOSS_TC_INPUT_ID, in, sizeof in), FLOSS_ERR_STATE);
+    floss_sim_pump(200);
+    floss_tc_assert_sim_clean();
+}
+
 static const floss_test_case_t tests[] = {
+    TEST_CASE(reinit_without_hid_forgets_session),
     TEST_CASE(raw_record_open_channels_app_scan),
     TEST_CASE(can_send_now_false_without_session),
     TEST_CASE(connect_failed_reports_reason),

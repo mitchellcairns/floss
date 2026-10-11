@@ -1911,7 +1911,18 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     return FLOSS_OK;
 }
 
+void floss_hid_reset(void) {
+    memset(&hid, 0, sizeof(hid));
+    memset(hid_slots, 0, sizeof(hid_slots));
+    hid_pending = 0;
+    hid.cb = &hid_no_callbacks;
+    hid.handle = HID_NO_HANDLE;
+}
+
 void floss_hid_poll(void) {
+    if (!hid.cfg) {
+        return;
+    }
     if (hid.ctrl_tx_len) {
         hid_ctrl_flush();
     }
