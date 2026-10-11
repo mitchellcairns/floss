@@ -69,16 +69,17 @@ testing. `floss_stats_reset()` starts a fresh measurement window.
 ### Histograms (`floss_hist_t`)
 
 Every histogram has `count`, `min_us`, `max_us`, `sum_us` (mean = sum / count)
-and 12 log2 buckets:
+and 16 log2 buckets, fine-grained at the low end where sub-millisecond
+behaviour lives:
 
 | Bucket | Range |
 |---|---|
-| 0 | < 128 us |
-| i (1..10) | [64 << i, 128 << i) us, i.e. 128-256 us, 256-512 us, ..., 65.5-131 ms |
-| 11 | >= ~131 ms (overflow) |
+| 0 | < 8 us |
+| i (1..14) | [4 << i, 8 << i) us, i.e. 8-16 us, 16-32 us, ..., 65.5-131 ms |
+| 15 | >= ~131 ms (overflow) |
 
 `floss_hist_percentile(h, 99)` returns the upper edge of the bucket containing
-that percentile (an upper bound, within 2x).
+that percentile (an upper bound, within 2x), clamped to the observed min/max.
 
 ### Transport / HCI
 

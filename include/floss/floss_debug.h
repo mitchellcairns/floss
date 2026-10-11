@@ -120,9 +120,10 @@ void floss_snoop_packet(uint8_t type, bool is_rx, const uint8_t *pkt, uint16_t l
 
 /**
  * Log2 histogram of microsecond durations.
- * bucket[0] = < 128us, bucket[i] = [64<<i, 128<<i) us, last = overflow (>= ~131 ms).
+ * bucket[0] = < 8us, bucket[i] = [4<<i, 8<<i) us, last = overflow (>= ~131 ms).
+ * Fine low buckets matter: a gamepad cares whether a step takes 20us or 200us.
  */
-#define FLOSS_HIST_BUCKETS 12
+#define FLOSS_HIST_BUCKETS 16
 typedef struct {
     uint32_t count;
     uint32_t min_us;

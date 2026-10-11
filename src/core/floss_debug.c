@@ -296,15 +296,15 @@ static unsigned log2_floor(uint32_t v)
 }
 
 /*
- * Bucket layout (floss_debug.h): [0] < 128 us, [i] = [64<<i, 128<<i) us,
- * [11] >= 131072 us. For us >= 128 the bucket is log2(us) - 6.
+ * Bucket layout (floss_debug.h): [0] < 8 us, [i] = [4<<i, 8<<i) us,
+ * [15] >= 131072 us. For us >= 8 the bucket is log2(us) - 2.
  */
 void floss_hist_add(floss_hist_t *h, uint32_t us)
 {
     unsigned b = 0;
 
-    if (us >= 128u) {
-        b = log2_floor(us) - 6u;
+    if (us >= 8u) {
+        b = log2_floor(us) - 2u;
         if (b >= FLOSS_HIST_BUCKETS) {
             b = FLOSS_HIST_BUCKETS - 1;
         }
@@ -344,7 +344,7 @@ uint32_t floss_hist_percentile(const floss_hist_t *h, uint8_t pct)
     for (unsigned i = 0; i < FLOSS_HIST_BUCKETS; i++) {
         cum += h->bucket[i];
         if (cum >= rank) {
-            uint32_t edge = (i == FLOSS_HIST_BUCKETS - 1) ? h->max_us : (128u << i);
+            uint32_t edge = (i == FLOSS_HIST_BUCKETS - 1) ? h->max_us : (8u << i);
             if (edge > h->max_us) {
                 edge = h->max_us;
             }
