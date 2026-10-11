@@ -35,6 +35,13 @@
  * "Connected" for the application means: link encrypted (every HID
  * characteristic requires it) AND the host enabled notifications on at
  * least one input report. That is the moment hosts start listening.
+ *
+ * Boot protocol: the boot characteristics (keyboard input/output, mouse
+ * input) are ordinary entries of s_hogp.reports flagged `boot`, appended
+ * after the application's reports, so they share the mailbox, CCCD and
+ * send machinery. report_active() decides which set the current Protocol
+ * Mode notifies; find_report() (the application's report IDs) never sees
+ * them. The table is still built once at init and never changes.
  */
 #include <stdatomic.h>
 
@@ -45,14 +52,24 @@
 
 #if FLOSS_ENABLE_LE
 
-/* service + protocol mode (2) + 4 per report + report map, info, control point (6) */
-#define HOGP_MAX_ATTRS (1 + 2 + 4 * FLOSS_HOGP_MAX_REPORTS + 6)
+/** Boot characteristics: keyboard input, keyboard output, mouse input. */
+#define HOGP_BOOT_REPORTS 3
+#define HOGP_REPORT_SLOTS (FLOSS_HOGP_MAX_REPORTS + HOGP_BOOT_REPORTS)
+
+/* service + protocol mode (2) + 4 per report + report map, info, control point (6)
+ * + boot keyboard input (3) + boot keyboard output (2) + boot mouse input (3) */
+#define HOGP_MAX_ATTRS (1 + 2 + 4 * FLOSS_HOGP_MAX_REPORTS + 6 + 8)
+
+#if FLOSS_HID_MAX_REPORT < FLOSS_HOGP_BOOT_MOUSE_MAX_LEN
+#error "FLOSS_HID_MAX_REPORT must hold a boot report (8 bytes)"
+#endif
 
 typedef struct {
-    uint8_t id;
+    uint8_t id;                  /* report ID; boot reports: FLOSS_HID_BOOT_KEYBOARD / _MOUSE */
     uint8_t type;
-    uint8_t len;                 /* configured payload length */
+    uint8_t len;                 /* configured payload length (boot mouse: maximum) */
     uint8_t index;               /* position in s_hogp.reports (bit in due masks) */
+    bool boot;                   /* a boot protocol characteristic, not a Report */
     uint16_t value_handle;
     uint8_t ref[2];              /* Report Reference value: {id, type} */
     floss_gatt_cccd_t cccd;      /* inputs only */
@@ -69,15 +86,16 @@ typedef struct {
 
 typedef struct {
     bool connected;       /* on_connected delivered */
-    uint8_t due;          /* paced mode: reports owed by the last tick (bit = report index) */
-    uint8_t force;        /* send current state even if unchanged (just subscribed) */
+    uint16_t due;         /* paced mode: reports owed by the last tick (bit = report index) */
+    uint16_t force;       /* send current state even if unchanged (just subscribed) */
 } hogp_link_t;
 
 static struct {
     const floss_hogp_config_t *cfg;
     floss_hogp_callbacks_t cb;
-    hogp_report_t reports[FLOSS_HOGP_MAX_REPORTS];
-    uint8_t report_count;
+    hogp_report_t reports[HOGP_REPORT_SLOTS];
+    uint8_t report_count;            /* application reports + boot characteristics */
+    hogp_report_t *boot_in[2];       /* boot keyboard / mouse input (NULL = not offered) */
     hogp_link_t links[FLOSS_MAX_CONNECTIONS];
 
     floss_gatt_attr_t attrs[HOGP_MAX_ATTRS];
@@ -92,20 +110,29 @@ static struct {
     bool have_last_send;
 } s_hogp;
 
-_Static_assert(FLOSS_HOGP_MAX_REPORTS <= 8, "due/force masks are 8 bits");
+_Static_assert(HOGP_REPORT_SLOTS <= 16, "due/force masks are 16 bits");
 
 /* ------------------------------------------------------------------------ */
 /* Mailbox                                                                  */
 /* ------------------------------------------------------------------------ */
 
+/** An application report (Report characteristic) by type and ID. */
 static hogp_report_t *find_report(uint8_t type, uint8_t id) {
     for (uint8_t i = 0; i < s_hogp.report_count; i++) {
-        if (s_hogp.reports[i].type == type && s_hogp.reports[i].id == id) {
-            return &s_hogp.reports[i];
+        hogp_report_t *r = &s_hogp.reports[i];
+        if (!r->boot && r->type == type && r->id == id) {
+            return r;
         }
     }
     return NULL;
 }
+
+/** Is this report's characteristic the one the current Protocol Mode notifies? */
+static inline bool report_active(const hogp_report_t *r) {
+    return r->boot == (s_hogp.protocol == FLOSS_HID_PROTOCOL_BOOT);
+}
+
+static void mailbox_write(hogp_report_t *r, const uint8_t *data, uint16_t len);
 
 floss_err_t floss_hogp_set_input(uint8_t report_id, const uint8_t *data, uint16_t len) {
     hogp_report_t *r = find_report(FLOSS_HID_REPORT_INPUT, report_id);
@@ -115,16 +142,39 @@ floss_err_t floss_hogp_set_input(uint8_t report_id, const uint8_t *data, uint16_
     if (len > r->len || (len && data == NULL)) {
         return FLOSS_ERR_INVALID;
     }
+    mailbox_write(r, data, len);
+    return FLOSS_OK;
+}
+
+floss_err_t floss_hogp_set_boot_input(uint8_t boot_id, const uint8_t *data, uint16_t len) {
+    if (boot_id != FLOSS_HID_BOOT_KEYBOARD && boot_id != FLOSS_HID_BOOT_MOUSE) {
+        return FLOSS_ERR_INVALID;
+    }
+    hogp_report_t *r = s_hogp.boot_in[boot_id - 1u];
+    if (r == NULL) {
+        return FLOSS_ERR_UNSUPPORTED;
+    }
+    uint16_t min = boot_id == FLOSS_HID_BOOT_KEYBOARD ? FLOSS_HID_BOOT_KEYBOARD_LEN : FLOSS_HID_BOOT_MOUSE_MIN_LEN;
+    if (data == NULL || len < min || len > r->len) {
+        return FLOSS_ERR_INVALID;
+    }
+    mailbox_write(r, data, len);
+    return FLOSS_OK;
+}
+
+/** Seqlock write (one writer per report). */
+static void mailbox_write(hogp_report_t *r, const uint8_t *data, uint16_t len) {
     uint32_t s = r->seq;
     r->seq = s + 1; /* odd: readers will retry */
     /* Full fence: the odd counter must be visible before any data byte. */
     atomic_thread_fence(memory_order_seq_cst);
-    memcpy(r->data, data, len);
+    if (len) {
+        memcpy(r->data, data, len);
+    }
     r->cur_len = (uint8_t)len;
     r->t_us = floss_hal_time_us();
     atomic_thread_fence(memory_order_release);
     r->seq = s + 2;
-    return FLOSS_OK;
 }
 
 /**
@@ -209,7 +259,7 @@ static floss_err_t send_report(uint8_t i, uint16_t handle, hogp_report_t *r) {
     uint32_t now = floss_hal_time_us();
     uint32_t prev = r->sent_seq[i];
     r->sent_seq[i] = seq;
-    s_hogp.links[i].force &= (uint8_t)~(1u << r->index);
+    s_hogp.links[i].force &= (uint16_t)~(1u << r->index);
     FLOSS_STAT_INC(hid_reports_sent);
     if (seq != prev && seq - prev > 2u && prev != 0) {
         /* Every +2 is one floss_hogp_set_input(); all but the newest were superseded. */
@@ -230,27 +280,31 @@ static floss_err_t send_report(uint8_t i, uint16_t handle, hogp_report_t *r) {
     return FLOSS_OK;
 }
 
-/** Bitmask of subscribed input reports whose slot changed (or were forced) since sent on link i. */
-static uint8_t changed_mask(uint8_t i) {
-    uint8_t m = 0;
+/**
+ * Bitmask of subscribed input reports of the current protocol whose slot
+ * changed (or were forced) since sent on link i.
+ */
+static uint16_t changed_mask(uint8_t i) {
+    uint16_t m = 0;
     for (uint8_t k = 0; k < s_hogp.report_count; k++) {
         hogp_report_t *r = &s_hogp.reports[k];
-        if (r->type != FLOSS_HID_REPORT_INPUT || !(r->cccd.v[i] & FLOSS_GATT_CCCD_NOTIFY)) {
+        if (r->type != FLOSS_HID_REPORT_INPUT || !(r->cccd.v[i] & FLOSS_GATT_CCCD_NOTIFY) || !report_active(r)) {
             continue;
         }
         if (r->seq != r->sent_seq[i] || (s_hogp.links[i].force & (1u << k))) {
-            m |= (uint8_t)(1u << k);
+            m |= (uint16_t)(1u << k);
         }
     }
     return m;
 }
 
-static uint8_t subscribed_mask(uint8_t i) {
-    uint8_t m = 0;
+/** Bitmask of subscribed input reports of the current protocol on link i. */
+static uint16_t subscribed_mask(uint8_t i) {
+    uint16_t m = 0;
     for (uint8_t k = 0; k < s_hogp.report_count; k++) {
         const hogp_report_t *r = &s_hogp.reports[k];
-        if (r->type == FLOSS_HID_REPORT_INPUT && (r->cccd.v[i] & FLOSS_GATT_CCCD_NOTIFY)) {
-            m |= (uint8_t)(1u << k);
+        if (r->type == FLOSS_HID_REPORT_INPUT && (r->cccd.v[i] & FLOSS_GATT_CCCD_NOTIFY) && report_active(r)) {
+            m |= (uint16_t)(1u << k);
         }
     }
     return m;
@@ -268,10 +322,10 @@ static void service_link(uint8_t i, bool tick) {
         hl->due = 0;
         return;
     }
-    uint8_t due;
+    uint16_t due;
     if (s_hogp.interval_us) {
         if (tick) {
-            hl->due |= (uint8_t)(changed_mask(i) | (s_hogp.cfg->send_unchanged ? subscribed_mask(i) : 0));
+            hl->due |= (uint16_t)(changed_mask(i) | (s_hogp.cfg->send_unchanged ? subscribed_mask(i) : 0));
         }
         due = hl->due;
     } else {
@@ -291,8 +345,8 @@ static void service_link(uint8_t i, bool tick) {
         if (send_report(i, handle, &s_hogp.reports[k]) != FLOSS_OK) {
             return;
         }
-        due &= (uint8_t)~(1u << k);
-        hl->due &= (uint8_t)~(1u << k);
+        due &= (uint16_t)~(1u << k);
+        hl->due &= (uint16_t)~(1u << k);
     }
 }
 
@@ -396,7 +450,7 @@ static int report_read(uint16_t conn, uint16_t h, const floss_gatt_attr_t *a, ui
     hogp_report_t *r = (hogp_report_t *)a->user;
     uint8_t tmp[FLOSS_HID_MAX_REPORT];
     uint16_t len = 0;
-    if (s_hogp.cb.on_get_report && r->type != FLOSS_HID_REPORT_OUTPUT) {
+    if (s_hogp.cb.on_get_report && r->type != FLOSS_HID_REPORT_OUTPUT && !r->boot) {
         uint8_t err = s_hogp.cb.on_get_report(r->type, r->id, tmp, r->len, &len);
         if (err) {
             return -(int)err;
@@ -446,7 +500,7 @@ static uint8_t report_cccd_write(uint16_t conn, uint16_t h, const floss_gatt_att
     hogp_report_t *r = (hogp_report_t *)a->user;
     int i = floss_le_link_index(conn);
     if (i >= 0 && (floss_get_le16(data) & FLOSS_GATT_CCCD_NOTIFY)) {
-        s_hogp.links[i].force |= (uint8_t)(1u << r->index);
+        s_hogp.links[i].force |= (uint16_t)(1u << r->index);
     }
     return 0;
 }
@@ -467,6 +521,12 @@ static uint8_t protocol_write(uint16_t conn, uint16_t h, const floss_gatt_attr_t
     if (s_hogp.protocol != data[0]) {
         s_hogp.protocol = data[0];
         FLOSS_LOGI(LE, "hogp: protocol %s", data[0] ? "report" : "boot");
+        /* The other characteristic set is live now: start it from the
+         * newest state instead of waiting for the next change. */
+        for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+            s_hogp.links[i].due = 0;
+            s_hogp.links[i].force = subscribed_mask(i);
+        }
         if (s_hogp.cb.on_set_protocol) {
             s_hogp.cb.on_set_protocol(data[0]);
         }
@@ -500,6 +560,41 @@ void floss_hogp_config_defaults(floss_hogp_config_t *cfg) {
     cfg->battery_service = true;
     cfg->battery_level = 100;
     cfg->max_inflight = 2; /* an LE notification is acknowledged one connection event later */
+}
+
+/**
+ * Append one boot characteristic (declaration, value, and a CCCD for inputs;
+ * boot characteristics carry no Report Reference) and its report slot.
+ * len = maximum value length, cur = length reads return before the first
+ * update (zeros). Returns the slot.
+ */
+static hogp_report_t *add_boot_report(floss_gatt_attr_t *t, uint16_t *n, uint16_t *value_at, uint16_t uuid,
+                                      uint8_t boot_id, uint8_t type, uint8_t len, uint8_t cur) {
+    uint8_t k = s_hogp.report_count++;
+    hogp_report_t *r = &s_hogp.reports[k];
+    memset(r, 0, sizeof(*r));
+    r->id = boot_id;
+    r->type = type;
+    r->len = len;
+    r->cur_len = cur;
+    r->index = k;
+    r->boot = true;
+    if (type == FLOSS_HID_REPORT_INPUT) {
+        t[(*n)++] = (floss_gatt_attr_t)FLOSS_GATT_CHARACTERISTIC(FLOSS_GATT_PROP_READ | FLOSS_GATT_PROP_NOTIFY);
+        value_at[k] = *n;
+        t[(*n)++] = (floss_gatt_attr_t)FLOSS_GATT_VALUE16_CB(uuid, FLOSS_GATT_P_RD_ENC, report_read, NULL, len, r);
+        t[*n] = (floss_gatt_attr_t)FLOSS_GATT_CCCD_P(r->cccd, FLOSS_GATT_P_READ | FLOSS_GATT_P_WR_ENC);
+        t[*n].write = report_cccd_write;
+        t[*n].user = r;
+        (*n)++;
+    } else {
+        t[(*n)++] = (floss_gatt_attr_t)FLOSS_GATT_CHARACTERISTIC(FLOSS_GATT_PROP_READ | FLOSS_GATT_PROP_WRITE |
+                                                                 FLOSS_GATT_PROP_WRITE_NO_RSP);
+        value_at[k] = *n;
+        t[(*n)++] =
+            (floss_gatt_attr_t)FLOSS_GATT_VALUE16_CB(uuid, FLOSS_GATT_P_RW_ENC, report_read, report_write, len, r);
+    }
+    return r;
 }
 
 floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_callbacks_t *cb) {
@@ -559,9 +654,9 @@ floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_cal
     /* Build the HID service table. value_at[k] = index of report k's value. */
     floss_gatt_attr_t *t = s_hogp.attrs;
     uint16_t n = 0;
-    uint16_t value_at[FLOSS_HOGP_MAX_REPORTS];
+    uint16_t value_at[HOGP_REPORT_SLOTS];
     t[n++] = (floss_gatt_attr_t)FLOSS_GATT_PRIMARY_SERVICE16(FLOSS_GATT_SVC_HID);
-    if (cfg->boot_device) {
+    if (cfg->boot_device || cfg->boot_keyboard || cfg->boot_mouse) {
         t[n++] = (floss_gatt_attr_t)FLOSS_GATT_CHARACTERISTIC(FLOSS_GATT_PROP_READ | FLOSS_GATT_PROP_WRITE_NO_RSP);
         t[n++] = (floss_gatt_attr_t)FLOSS_GATT_VALUE16_CB(FLOSS_GATT_CHR_PROTOCOL_MODE, FLOSS_GATT_P_RW_ENC,
                                                           protocol_read, protocol_write, 1, NULL);
@@ -604,6 +699,20 @@ floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_cal
         t[n++] = (floss_gatt_attr_t)FLOSS_GATT_DESCRIPTOR16(FLOSS_GATT_UUID_REPORT_REF, FLOSS_GATT_P_RD_ENC, r->ref,
                                                             2);
     }
+    s_hogp.boot_in[0] = NULL;
+    s_hogp.boot_in[1] = NULL;
+    if (cfg->boot_keyboard) {
+        s_hogp.boot_in[0] = add_boot_report(t, &n, value_at, FLOSS_GATT_CHR_BOOT_KB_INPUT, FLOSS_HID_BOOT_KEYBOARD,
+                                            FLOSS_HID_REPORT_INPUT, FLOSS_HID_BOOT_KEYBOARD_LEN,
+                                            FLOSS_HID_BOOT_KEYBOARD_LEN);
+        (void)add_boot_report(t, &n, value_at, FLOSS_GATT_CHR_BOOT_KB_OUTPUT, FLOSS_HID_BOOT_KEYBOARD,
+                              FLOSS_HID_REPORT_OUTPUT, 1, 1);
+    }
+    if (cfg->boot_mouse) {
+        s_hogp.boot_in[1] = add_boot_report(t, &n, value_at, FLOSS_GATT_CHR_BOOT_MOUSE_INPUT, FLOSS_HID_BOOT_MOUSE,
+                                            FLOSS_HID_REPORT_INPUT, FLOSS_HOGP_BOOT_MOUSE_MAX_LEN,
+                                            FLOSS_HID_BOOT_MOUSE_MIN_LEN);
+    }
     t[n++] = (floss_gatt_attr_t)FLOSS_GATT_CHARACTERISTIC(FLOSS_GATT_PROP_READ);
     t[n++] = (floss_gatt_attr_t)FLOSS_GATT_VALUE16(FLOSS_GATT_CHR_REPORT_MAP, FLOSS_GATT_P_RD_ENC, cfg->report_map,
                                                    cfg->report_map_len, NULL);
@@ -619,11 +728,12 @@ floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_cal
         s_hogp.cfg = NULL;
         return FLOSS_ERR_NOMEM;
     }
-    for (uint8_t k = 0; k < cfg->report_count; k++) {
+    for (uint8_t k = 0; k < s_hogp.report_count; k++) {
         s_hogp.reports[k].value_handle = (uint16_t)(base + value_at[k]);
     }
-    FLOSS_LOGI(LE, "hogp: HID service at 0x%04x-0x%04x, %u reports", (unsigned)base, (unsigned)(base + n - 1),
-               (unsigned)cfg->report_count);
+    FLOSS_LOGI(LE, "hogp: HID service at 0x%04x-0x%04x, %u reports%s%s", (unsigned)base, (unsigned)(base + n - 1),
+               (unsigned)cfg->report_count, cfg->boot_keyboard ? ", boot keyboard" : "",
+               cfg->boot_mouse ? ", boot mouse" : "");
     return FLOSS_OK;
 }
 
@@ -706,6 +816,7 @@ void floss_hogp_on_link_down(uint16_t handle, uint8_t reason) {
         s_hogp.reports[k].sent_seq[i] = 0;
     }
     s_hogp.suspended = false;
+    s_hogp.protocol = FLOSS_HID_PROTOCOL_REPORT; /* every connection starts in report protocol */
     if (was) {
         FLOSS_LOGI(LE, "hogp: host 0x%04x gone", (unsigned)handle);
         if (s_hogp.cb.on_disconnected) {

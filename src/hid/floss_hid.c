@@ -45,6 +45,32 @@
  * buffer suffices; if L2CAP cannot take it right now it is kept and retried
  * from floss_hid_poll() / on_can_send.
  *
+ * Fragmentation (HIDP DATC): a message larger than the receiver's MTU is
+ * sent as a first packet of exactly MTU bytes followed by DATC (0xB)
+ * continuation packets carrying the same parameter; the transfer ends with
+ * the first packet shorter than the MTU, which is a header-only DATC when
+ * the data happens to fill the last packet exactly.
+ *
+ *   host -> us:  SET_REPORT [hdr|id|data...] (== our MTU)  DATC [hdr|data...]
+ *                ... collected in ctrl_rx (report ID + FLOSS_HID_MAX_REPORT),
+ *                then handled as one SET_REPORT; overflow -> ERR_INVALID_PARAMETER
+ *   us -> host:  GET_REPORT answers are built whole in ctrl_tx and cut into
+ *                MTU-sized packets while flushing; each DATC header is written
+ *                over the last byte of the packet already sent (no copy).
+ *
+ * ===========================================================================
+ *  BOOT PROTOCOL
+ * ===========================================================================
+ *
+ * Keyboards and mice (cfg->boot_device) can be switched to the boot report
+ * formats with SET_PROTOCOL. The two boot reports get their own mailbox
+ * slots after the report-protocol ones; hid.slot_lo/slot_hi select which
+ * range the input path scans, so the report-protocol hot path is exactly
+ * the code it was, just with the range read from the session state. A
+ * protocol switch forces the newest contents of the newly active slots out
+ * once. In boot protocol the report ID byte (1 keyboard, 2 mouse) is always
+ * present in DATA / GET_REPORT / SET_REPORT, whatever the descriptor says.
+ *
  * ===========================================================================
  *  THE INPUT PATH  (performance critical)
  * ===========================================================================
@@ -157,8 +183,16 @@
 /** Seqlock read attempts before deferring to the next poll. */
 #define HID_SEQLOCK_TRIES 3
 
-#if FLOSS_HID_MAX_INPUT_IDS > 32
-#error "FLOSS_HID_MAX_INPUT_IDS must be <= 32 (slot bitmasks are uint32_t)"
+/* Report-protocol slots first, then the two boot-protocol slots. */
+#define HID_BOOT_SLOT0 FLOSS_HID_MAX_INPUT_IDS
+#define HID_SLOT_COUNT (FLOSS_HID_MAX_INPUT_IDS + 2)
+
+#if HID_SLOT_COUNT > 32
+#error "FLOSS_HID_MAX_INPUT_IDS must be <= 30 (slot bitmasks are uint32_t, 2 boot slots)"
+#endif
+
+#if FLOSS_HID_MAX_REPORT < FLOSS_HID_BOOT_KEYBOARD_LEN
+#error "FLOSS_HID_MAX_REPORT must hold a boot keyboard report (8 bytes)"
 #endif
 
 /* ------------------------------------------------------------------------ */
@@ -206,7 +240,8 @@ typedef struct {
     bool count_coalesced;   /**< sent_seq belongs to this session */
 } hid_slot_t;
 
-static hid_slot_t hid_slots[FLOSS_HID_MAX_INPUT_IDS];
+/** [0, MAX_INPUT_IDS): claimed per report ID; then boot keyboard, boot mouse. */
+static hid_slot_t hid_slots[HID_SLOT_COUNT];
 
 /** Set by producers after publishing; cleared by the stack before scanning. */
 static volatile uint8_t hid_pending;
@@ -231,6 +266,9 @@ static struct {
     bool link_disc_sent;
 
     uint8_t protocol;         /**< FLOSS_HID_PROTOCOL_* */
+    uint8_t slot_lo;          /**< input slots of the current protocol: [slot_lo, slot_hi) */
+    uint8_t slot_hi;
+    uint8_t boot_mask;        /**< supported boot reports: bit (boot ID - 1) */
     uint8_t idle_rate;        /**< SET_IDLE value (4 ms units), reported back only */
     bool uses_report_ids;     /**< report ID byte present in reports */
 
@@ -250,6 +288,15 @@ static struct {
     /** Control-channel response under construction / waiting for L2CAP. */
     uint8_t ctrl_tx[2 + FLOSS_HID_MAX_REPORT];
     uint16_t ctrl_tx_len;     /**< non-zero = response waiting to be sent */
+    uint16_t ctrl_tx_off;     /**< bytes of ctrl_tx already handed to L2CAP (fragmented answers) */
+    bool ctrl_tx_term;        /**< a header-only DATC is still owed (last packet filled the MTU) */
+
+    /** Fragmented SET_REPORT being reassembled (report ID + report). */
+    uint8_t ctrl_rx[1 + FLOSS_HID_MAX_REPORT];
+    uint16_t ctrl_rx_len;
+    uint8_t ctrl_rx_param;    /**< SET_REPORT parameter (report type) */
+    bool ctrl_rx_active;      /**< waiting for DATC continuations */
+    bool ctrl_rx_overflow;    /**< more data than ctrl_rx holds: refuse when complete */
 } hid;
 
 static const floss_hid_callbacks_t hid_no_callbacks;
@@ -402,10 +449,10 @@ static bool hid_slot_read(const hid_slot_t *s, uint8_t *out, uint16_t cap, uint1
     return false;
 }
 
-/** Bitmask of slots whose content changed since it was last sent. */
+/** Bitmask of the current protocol's slots whose content changed since last sent. */
 static uint32_t hid_changed_mask(void) {
     uint32_t mask = 0;
-    for (unsigned i = 0; i < FLOSS_HID_MAX_INPUT_IDS; i++) {
+    for (unsigned i = hid.slot_lo; i < hid.slot_hi; i++) {
         const hid_slot_t *s = &hid_slots[i];
         if (s->used && s->seq != s->sent_seq) {
             mask |= 1u << i;
@@ -414,16 +461,34 @@ static uint32_t hid_changed_mask(void) {
     return mask;
 }
 
-/** Bitmask of slots that hold a report (published at least once). */
+/** Bitmask of the current protocol's slots that hold a report (published at least once). */
 static uint32_t hid_published_mask(void) {
     uint32_t mask = 0;
-    for (unsigned i = 0; i < FLOSS_HID_MAX_INPUT_IDS; i++) {
+    for (unsigned i = hid.slot_lo; i < hid.slot_hi; i++) {
         const hid_slot_t *s = &hid_slots[i];
         if (s->used && s->seq != 0) {
             mask |= 1u << i;
         }
     }
     return mask;
+}
+
+/**
+ * Seqlock write. Single writer per slot, so plain load/store of seq is
+ * enough (no atomic RMW, which the Cortex-M0+ lacks).
+ */
+static inline void hid_slot_write(hid_slot_t *s, const uint8_t *data, uint16_t len) {
+    uint32_t seq = s->seq;
+    s->seq = seq + 1u;
+    hid_fence();
+    s->len = len;
+    if (len) {
+        memcpy(s->data, data, len);
+    }
+    s->t_set_us = floss_hal_time_us();
+    hid_fence();
+    s->seq = seq + 2u;
+    hid_pending = 1;
 }
 
 floss_err_t floss_hid_set_input(uint8_t report_id, const uint8_t *data, uint16_t len) {
@@ -437,23 +502,46 @@ floss_err_t floss_hid_set_input(uint8_t report_id, const uint8_t *data, uint16_t
             return FLOSS_ERR_NOMEM; /* raise FLOSS_HID_MAX_INPUT_IDS */
         }
     }
-
-    /* Seqlock write. Single writer per slot, so plain load/store of seq is
-     * enough (no atomic RMW, which the Cortex-M0+ lacks). */
-    uint32_t seq = s->seq;
-    s->seq = seq + 1u;
-    hid_fence();
-    s->len = len;
-    if (len) {
-        memcpy(s->data, data, len);
-    }
-    s->t_set_us = floss_hal_time_us();
-    hid_fence();
-    s->seq = seq + 2u;
-
-    hid_pending = 1;
+    hid_slot_write(s, data, len);
     FLOSS_TRACE(FLOSS_TR_HID_SET_INPUT, report_id);
     return FLOSS_OK;
+}
+
+/** Boot slot for a boot report ID (1 keyboard, 2 mouse), NULL if the device has none. */
+static hid_slot_t *hid_boot_slot(uint8_t boot_id) {
+    if (boot_id < FLOSS_HID_BOOT_KEYBOARD || boot_id > FLOSS_HID_BOOT_MOUSE ||
+        !(hid.boot_mask & (1u << (boot_id - 1u)))) {
+        return NULL;
+    }
+    return &hid_slots[HID_BOOT_SLOT0 + boot_id - 1u];
+}
+
+floss_err_t floss_hid_set_boot_input(uint8_t boot_id, const uint8_t *data, uint16_t len) {
+    if (!data || len > FLOSS_HID_MAX_REPORT ||
+        (boot_id != FLOSS_HID_BOOT_KEYBOARD && boot_id != FLOSS_HID_BOOT_MOUSE) ||
+        (boot_id == FLOSS_HID_BOOT_KEYBOARD && len != FLOSS_HID_BOOT_KEYBOARD_LEN) ||
+        (boot_id == FLOSS_HID_BOOT_MOUSE && len < FLOSS_HID_BOOT_MOUSE_MIN_LEN)) {
+        return FLOSS_ERR_INVALID;
+    }
+    hid_slot_t *s = hid_boot_slot(boot_id);
+    if (!s) {
+        return FLOSS_ERR_UNSUPPORTED;
+    }
+    hid_slot_write(s, data, len);
+    FLOSS_TRACE(FLOSS_TR_HID_SET_INPUT, boot_id);
+    return FLOSS_OK;
+}
+
+/** Select the protocol: which slot range the input path sends from. */
+static void hid_apply_protocol(uint8_t proto) {
+    hid.protocol = proto;
+    if (proto == FLOSS_HID_PROTOCOL_BOOT) {
+        hid.slot_lo = HID_BOOT_SLOT0;
+        hid.slot_hi = HID_SLOT_COUNT;
+    } else {
+        hid.slot_lo = 0;
+        hid.slot_hi = FLOSS_HID_MAX_INPUT_IDS;
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -579,7 +667,7 @@ static void hid_input_service(void) {
         want = hid.due_mask;
     }
 
-    for (unsigned i = 0; want && i < FLOSS_HID_MAX_INPUT_IDS; i++) {
+    for (unsigned i = hid.slot_lo; want && i < HID_SLOT_COUNT; i++) {
         uint32_t bit = 1u << i;
         if (!(want & bit)) {
             continue;
@@ -696,23 +784,76 @@ void floss_hid_set_report_interval(uint32_t interval_us) {
 /* Control channel                                                          */
 /* ------------------------------------------------------------------------ */
 
-/** Try to hand the pending control response to L2CAP. */
+/** Forget the pending control response (the buffer is about to be rewritten). */
+static void hid_ctrl_tx_reset(void) {
+    hid.ctrl_tx_len = 0;
+    hid.ctrl_tx_off = 0;
+    hid.ctrl_tx_term = false;
+}
+
+/** Abandon a SET_REPORT reassembly in progress. */
+static void hid_ctrl_rx_reset(void) {
+    hid.ctrl_rx_active = false;
+    hid.ctrl_rx_overflow = false;
+    hid.ctrl_rx_len = 0;
+}
+
+/**
+ * Hand the pending control response to L2CAP, cut into packets of at most
+ * the host's MTU (see "Fragmentation" above): packet 1 is ctrl_tx as built,
+ * every further packet is a DATC header written over the last byte already
+ * sent followed by the next bytes; a header-only DATC ends a transfer whose
+ * last packet filled the MTU exactly. Stops at the first BUSY and resumes
+ * from floss_hid_poll() / on_can_send.
+ */
 static void hid_ctrl_flush(void) {
     if (!hid.ctrl_tx_len) {
         return;
     }
     if (!hid.ctrl || !hid.ctrl_open) {
-        hid.ctrl_tx_len = 0;
+        hid_ctrl_tx_reset();
         return;
     }
-    floss_err_t err = floss_l2cap_send(hid.ctrl, hid.ctrl_tx, hid.ctrl_tx_len);
-    if (err == FLOSS_ERR_BUSY) {
-        return; /* keep it; retried from floss_hid_poll / on_can_send */
+    uint16_t mtu = hid.ctrl->remote_mtu;
+    uint8_t datc = HIDP_HDR(HIDP_DATC, hid.ctrl_tx[0] & 0x0F);
+    for (;;) {
+        const uint8_t *pkt;
+        uint16_t n;
+        uint16_t next = hid.ctrl_tx_off;
+        if (hid.ctrl_tx_off < hid.ctrl_tx_len) {
+            uint16_t start = 0;
+            if (hid.ctrl_tx_off) {
+                start = (uint16_t)(hid.ctrl_tx_off - 1u);
+                hid.ctrl_tx[start] = datc; /* that byte already left in the previous packet */
+            }
+            n = (uint16_t)FLOSS_MIN((uint16_t)(hid.ctrl_tx_len - start), mtu);
+            pkt = hid.ctrl_tx + start;
+            next = (uint16_t)(start + n);
+        } else if (hid.ctrl_tx_term) {
+            pkt = &datc;
+            n = 1;
+        } else {
+            break;
+        }
+        floss_err_t err = floss_l2cap_send(hid.ctrl, pkt, n);
+        if (err == FLOSS_ERR_BUSY) {
+            return; /* keep it; retried from floss_hid_poll / on_can_send */
+        }
+        if (err != FLOSS_OK) {
+            FLOSS_LOGW(HID, "control response dropped: %s", floss_err_str(err));
+            break;
+        }
+        if (hid.ctrl_tx_off < hid.ctrl_tx_len) {
+            hid.ctrl_tx_off = next;
+            hid.ctrl_tx_term = next >= hid.ctrl_tx_len && n == mtu;
+            if (next < hid.ctrl_tx_len || hid.ctrl_tx_term) {
+                FLOSS_LOGD(HID, "control response fragment %u/%u bytes", next, hid.ctrl_tx_len);
+            }
+        } else {
+            hid.ctrl_tx_term = false;
+        }
     }
-    if (err != FLOSS_OK) {
-        FLOSS_LOGW(HID, "control response dropped: %s", floss_err_str(err));
-    }
-    hid.ctrl_tx_len = 0;
+    hid_ctrl_tx_reset();
 }
 
 static void hid_ctrl_respond(uint16_t len) {
@@ -722,13 +863,20 @@ static void hid_ctrl_respond(uint16_t len) {
         FLOSS_LOGW(HID, "control response overrun");
     }
     hid.ctrl_tx_len = len;
+    hid.ctrl_tx_off = 0;
+    hid.ctrl_tx_term = false;
     hid_ctrl_flush();
 }
 
 static void hid_handshake(uint8_t result) {
-    hid.ctrl_tx_len = 0; /* the buffer is about to be rewritten */
+    hid_ctrl_tx_reset(); /* the buffer is about to be rewritten */
     hid.ctrl_tx[0] = HIDP_HDR(HIDP_HANDSHAKE, result);
     hid_ctrl_respond(1);
+}
+
+/** In boot protocol the report ID byte is always present, whatever the descriptor says. */
+static inline bool hid_ids_on_wire(void) {
+    return hid.uses_report_ids || hid.protocol == FLOSS_HID_PROTOCOL_BOOT;
 }
 
 static void hid_deliver_output(uint8_t id, const uint8_t *data, uint16_t len) {
@@ -752,41 +900,61 @@ static uint8_t hid_mailbox_get(uint8_t id, uint8_t *out, uint16_t cap, uint16_t 
     return FLOSS_HID_HS_SUCCESSFUL;
 }
 
+/** Answer GET_REPORT(INPUT) in boot protocol from the boot slots. */
+static uint8_t hid_boot_get(uint8_t id, uint8_t *out, uint16_t cap, uint16_t *len) {
+    const hid_slot_t *s = hid_boot_slot(id);
+    if (!s) {
+        return FLOSS_HID_HS_ERR_INVALID_REPORT_ID;
+    }
+    uint32_t t, seq;
+    if (!hid_slot_read(s, out, cap, len, &t, &seq)) {
+        return FLOSS_HID_HS_NOT_READY;
+    }
+    return FLOSS_HID_HS_SUCCESSFUL;
+}
+
 /*
- * GET_REPORT: [hdr][report ID if the descriptor uses IDs][BufferSize le16 if
+ * GET_REPORT: [hdr][report ID if IDs are on the wire][BufferSize le16 if
  * param bit 3]. Answer DATA|type with the report, truncated to BufferSize
- * (which counts the report ID + report bytes) and to the channel MTU.
+ * (which counts the report ID + report bytes); answers larger than the
+ * host's MTU are fragmented by hid_ctrl_flush().
  */
 static void hid_on_get_report(uint8_t param, const uint8_t *p, uint16_t len) {
     uint8_t type = param & HIDP_REPORT_TYPE_MASK;
     bool size_present = (param & HIDP_GET_REPORT_SIZE_PRESENT) != 0;
-    uint16_t need = (uint16_t)((hid.uses_report_ids ? 1u : 0u) + (size_present ? 2u : 0u));
+    bool ids = hid_ids_on_wire();
+    uint16_t need = (uint16_t)((ids ? 1u : 0u) + (size_present ? 2u : 0u));
     if (type == FLOSS_HID_REPORT_OTHER || len < need) {
         hid_handshake(FLOSS_HID_HS_ERR_INVALID_PARAMETER);
         return;
     }
-    uint8_t id = hid.uses_report_ids ? p[0] : 0;
+    uint8_t id = ids ? p[0] : 0;
     uint32_t max = UINT32_MAX;
     if (size_present) {
-        max = floss_get_le16(p + (hid.uses_report_ids ? 1 : 0));
+        max = floss_get_le16(p + (ids ? 1 : 0));
     }
 
-    hid.ctrl_tx_len = 0;
+    hid_ctrl_tx_reset();
     uint8_t *out = hid.ctrl_tx;
     uint16_t hdr = 0;
     out[hdr++] = HIDP_HDR(HIDP_DATA, type);
-    if (hid.uses_report_ids) {
+    if (ids) {
         out[hdr++] = id;
     }
 
     uint16_t rlen = 0;
     uint8_t hs = FLOSS_HID_HS_ERR_UNSUPPORTED_REQUEST;
-    if (hid.cb->on_get_report) {
-        hs = hid.cb->on_get_report(type, id, out + hdr, FLOSS_HID_MAX_REPORT, &rlen);
-    }
-    if (hs == FLOSS_HID_HS_ERR_UNSUPPORTED_REQUEST && type == FLOSS_HID_REPORT_INPUT) {
-        /* No (or declining) callback: the mailbox holds the current input state. */
-        hs = hid_mailbox_get(id, out + hdr, FLOSS_HID_MAX_REPORT, &rlen);
+    if (hid.protocol == FLOSS_HID_PROTOCOL_BOOT && type == FLOSS_HID_REPORT_INPUT) {
+        /* Boot input reports have a fixed format the stack owns. */
+        hs = hid_boot_get(id, out + hdr, FLOSS_HID_MAX_REPORT, &rlen);
+    } else {
+        if (hid.cb->on_get_report) {
+            hs = hid.cb->on_get_report(type, id, out + hdr, FLOSS_HID_MAX_REPORT, &rlen);
+        }
+        if (hs == FLOSS_HID_HS_ERR_UNSUPPORTED_REQUEST && type == FLOSS_HID_REPORT_INPUT) {
+            /* No (or declining) callback: the mailbox holds the current input state. */
+            hs = hid_mailbox_get(id, out + hdr, FLOSS_HID_MAX_REPORT, &rlen);
+        }
     }
     if (hs != FLOSS_HID_HS_SUCCESSFUL) {
         hid_handshake(hs);
@@ -799,13 +967,14 @@ static void hid_on_get_report(uint8_t param, const uint8_t *p, uint16_t len) {
     if (total - 1u > max) {
         total = 1u + max;
     }
-    if (total > hid.ctrl->remote_mtu) {
-        total = hid.ctrl->remote_mtu;
-    }
     hid_ctrl_respond((uint16_t)total);
 }
 
-/* SET_REPORT: [hdr][report ID if IDs used][report]. Answer with a HANDSHAKE. */
+/*
+ * SET_REPORT: [hdr][report ID if IDs are on the wire][report] (p/len exclude
+ * the header; for a fragmented transfer they point at the reassembled data).
+ * Answer with a HANDSHAKE.
+ */
 static void hid_on_set_report(uint8_t param, const uint8_t *p, uint16_t len) {
     uint8_t type = param & HIDP_REPORT_TYPE_MASK;
     if (type == FLOSS_HID_REPORT_OTHER) {
@@ -813,7 +982,7 @@ static void hid_on_set_report(uint8_t param, const uint8_t *p, uint16_t len) {
         return;
     }
     uint8_t id = 0;
-    if (hid.uses_report_ids) {
+    if (hid_ids_on_wire()) {
         if (len < 1) {
             hid_handshake(FLOSS_HID_HS_ERR_INVALID_PARAMETER);
             return;
@@ -821,6 +990,11 @@ static void hid_on_set_report(uint8_t param, const uint8_t *p, uint16_t len) {
         id = p[0];
         p++;
         len--;
+    }
+    if (len > FLOSS_HID_MAX_REPORT) {
+        FLOSS_LOGW(HID, "SET_REPORT id %u: %u bytes exceed FLOSS_HID_MAX_REPORT", id, len);
+        hid_handshake(FLOSS_HID_HS_ERR_INVALID_PARAMETER);
+        return;
     }
     uint8_t hs;
     if (hid.cb->on_set_report) {
@@ -878,6 +1052,58 @@ static void hid_on_hid_control(uint8_t op) {
     }
 }
 
+/**
+ * Append one SET_REPORT fragment (data after the HIDP header) to ctrl_rx.
+ * A fragment shorter than our MTU completes the transfer, which is then
+ * handled as a single SET_REPORT - or refused if it did not fit.
+ */
+static void hid_ctrl_rx_append(const uint8_t *p, uint16_t n, bool last) {
+    if (!hid.ctrl_rx_overflow) {
+        if ((uint32_t)hid.ctrl_rx_len + n > sizeof(hid.ctrl_rx)) {
+            hid.ctrl_rx_overflow = true; /* keep consuming until the transfer ends */
+        } else {
+            memcpy(hid.ctrl_rx + hid.ctrl_rx_len, p, n);
+            hid.ctrl_rx_len = (uint16_t)(hid.ctrl_rx_len + n);
+        }
+    }
+    if (!last) {
+        return;
+    }
+    bool overflow = hid.ctrl_rx_overflow;
+    uint16_t total = hid.ctrl_rx_len;
+    hid_ctrl_rx_reset();
+    if (overflow) {
+        FLOSS_LOGW(HID, "fragmented SET_REPORT larger than %u bytes refused", (unsigned)sizeof(hid.ctrl_rx));
+        hid_handshake(FLOSS_HID_HS_ERR_INVALID_PARAMETER);
+        return;
+    }
+    FLOSS_LOGD(HID, "fragmented SET_REPORT reassembled (%u bytes)", total);
+    hid_on_set_report(hid.ctrl_rx_param, hid.ctrl_rx, total);
+}
+
+/**
+ * SET_PROTOCOL. Boot needs cfg->boot_device. On a change the input path
+ * switches slot range and sends the new protocol's newest reports once.
+ */
+static void hid_on_set_protocol(uint8_t param) {
+    uint8_t proto = param & 0x01;
+    if (proto == FLOSS_HID_PROTOCOL_BOOT && !hid.cfg->boot_device) {
+        hid_handshake(FLOSS_HID_HS_ERR_INVALID_PARAMETER);
+        return;
+    }
+    if (proto != hid.protocol) {
+        hid_apply_protocol(proto);
+        hid.due_mask = 0;
+        hid.force_mask = hid_published_mask();
+        hid_pending = 1;
+    }
+    FLOSS_LOGI(HID, "protocol -> %s", proto == FLOSS_HID_PROTOCOL_BOOT ? "boot" : "report");
+    if (hid.cb->on_set_protocol) {
+        hid.cb->on_set_protocol(proto);
+    }
+    hid_handshake(FLOSS_HID_HS_SUCCESSFUL);
+}
+
 static void hid_ctrl_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16_t len) {
     if (ch != hid.ctrl || len == 0) {
         return;
@@ -888,6 +1114,16 @@ static void hid_ctrl_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16
     uint16_t n = (uint16_t)(len - 1);
     FLOSS_HEXDUMP(HID, "ctrl rx", data, len);
 
+    if (hid.ctrl_rx_active) {
+        if (type == HIDP_DATC) {
+            hid_ctrl_rx_append(p, n, len < ch->local_mtu);
+            return;
+        }
+        /* Anything else ends the transfer: the host gave up on it. */
+        FLOSS_LOGW(HID, "fragmented SET_REPORT abandoned by 0x%02X", data[0]);
+        hid_ctrl_rx_reset();
+    }
+
     switch (type) {
     case HIDP_HID_CONTROL:
         hid_on_hid_control(param);
@@ -896,30 +1132,27 @@ static void hid_ctrl_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16
         hid_on_get_report(param, p, n);
         break;
     case HIDP_SET_REPORT:
+        if (len >= ch->local_mtu) {
+            /* A full-MTU packet: DATC continuations follow. */
+            hid_ctrl_rx_reset();
+            hid.ctrl_rx_active = true;
+            hid.ctrl_rx_param = param;
+            hid_ctrl_rx_append(p, n, false);
+            break;
+        }
         hid_on_set_report(param, p, n);
         break;
     case HIDP_GET_PROTOCOL:
-        hid.ctrl_tx_len = 0;
+        hid_ctrl_tx_reset();
         hid.ctrl_tx[0] = HIDP_HDR(HIDP_DATA, FLOSS_HID_REPORT_OTHER);
         hid.ctrl_tx[1] = hid.protocol;
         hid_ctrl_respond(2);
         break;
-    case HIDP_SET_PROTOCOL: {
-        uint8_t proto = param & 0x01;
-        if (proto == FLOSS_HID_PROTOCOL_BOOT && !hid.cfg->boot_device) {
-            hid_handshake(FLOSS_HID_HS_ERR_UNSUPPORTED_REQUEST);
-            break;
-        }
-        hid.protocol = proto;
-        FLOSS_LOGI(HID, "protocol -> %s", proto == FLOSS_HID_PROTOCOL_BOOT ? "boot" : "report");
-        if (hid.cb->on_set_protocol) {
-            hid.cb->on_set_protocol(proto);
-        }
-        hid_handshake(FLOSS_HID_HS_SUCCESSFUL);
+    case HIDP_SET_PROTOCOL:
+        hid_on_set_protocol(param);
         break;
-    }
     case HIDP_GET_IDLE:
-        hid.ctrl_tx_len = 0;
+        hid_ctrl_tx_reset();
         hid.ctrl_tx[0] = HIDP_HDR(HIDP_DATA, FLOSS_HID_REPORT_OTHER);
         hid.ctrl_tx[1] = hid.idle_rate;
         hid_ctrl_respond(2);
@@ -940,7 +1173,10 @@ static void hid_ctrl_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16
     }
 }
 
-/* Interrupt channel: the host sends DATA|OUTPUT (0xA2) reports here. */
+/*
+ * Interrupt channel: the host sends DATA|OUTPUT (0xA2) reports here, e.g. the
+ * boot keyboard LEDs as A2 01 <leds>.
+ */
 static void hid_intr_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16_t len) {
     if (ch != hid.intr || len == 0) {
         return;
@@ -952,7 +1188,7 @@ static void hid_intr_on_data(floss_l2cap_chan_t *ch, const uint8_t *data, uint16
     const uint8_t *p = data + 1;
     uint16_t n = (uint16_t)(len - 1);
     uint8_t id = 0;
-    if (hid.uses_report_ids) {
+    if (hid_ids_on_wire()) {
         if (n < 1) {
             return;
         }
@@ -984,8 +1220,9 @@ static void hid_end_session(void) {
     hid.link_disc_sent = false;
     hid.due_mask = 0;
     hid.force_mask = 0;
-    hid.ctrl_tx_len = 0;
-    hid.protocol = FLOSS_HID_PROTOCOL_REPORT;
+    hid_ctrl_tx_reset();
+    hid_ctrl_rx_reset();
+    hid_apply_protocol(FLOSS_HID_PROTOCOL_REPORT);
 }
 
 /** Connectable always; discoverable only if there is nobody to go back to. */
@@ -1003,7 +1240,8 @@ static void hid_session_up(void) {
     hid.reconnect_retries = 0;
     hid.auth_failed = false;
     hid.local_teardown = false;
-    hid.protocol = FLOSS_HID_PROTOCOL_REPORT;
+    hid_apply_protocol(FLOSS_HID_PROTOCOL_REPORT); /* HIDP: every connection starts in report protocol */
+    hid.due_mask = 0;
     floss_timer_stop(&hid.reconnect_timer);
     floss_timer_stop(&hid.teardown_timer);
 
@@ -1024,7 +1262,7 @@ static void hid_session_up(void) {
     /* Send the current state of every report once, so the host does not
      * have to wait for the next change to know where the sticks are. */
     hid.force_mask = hid_published_mask();
-    for (unsigned i = 0; i < FLOSS_HID_MAX_INPUT_IDS; i++) {
+    for (unsigned i = 0; i < HID_SLOT_COUNT; i++) {
         hid_slots[i].count_coalesced = false;
     }
     hid.defer_counted = false;
@@ -1345,7 +1583,8 @@ static void hid_chan_close(floss_l2cap_chan_t *ch, bool is_ctrl) {
     *slot = NULL;
     if (is_ctrl) {
         hid.ctrl_open = false;
-        hid.ctrl_tx_len = 0;
+        hid_ctrl_tx_reset();
+        hid_ctrl_rx_reset();
     } else {
         hid.intr_open = false;
     }
@@ -1543,10 +1782,27 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     hid.cfg = cfg;
     hid.cb = cb ? cb : &hid_no_callbacks;
     hid.handle = HID_NO_HANDLE;
-    hid.protocol = FLOSS_HID_PROTOCOL_REPORT;
+    hid_apply_protocol(FLOSS_HID_PROTOCOL_REPORT);
     hid.interval_us = cfg->report_interval_us;
     hid.max_inflight = cfg->max_inflight;
     hid.uses_report_ids = hid_descriptor_uses_ids(cfg->report_descriptor, cfg->report_descriptor_len);
+
+    /* Boot slots: fixed IDs, zero reports of the minimum length until the
+     * application publishes (a GET_REPORT before that reads "no keys"). */
+    if (cfg->boot_device) {
+        bool kbd = (cfg->subclass & FLOSS_HID_SUBCLASS_KEYBOARD) != 0;
+        bool mouse = (cfg->subclass & FLOSS_HID_SUBCLASS_MOUSE) != 0;
+        if (!kbd && !mouse) {
+            kbd = mouse = true; /* subclass says neither: offer both */
+        }
+        hid.boot_mask = (uint8_t)((kbd ? 1u : 0u) | (mouse ? 2u : 0u));
+        for (uint8_t b = FLOSS_HID_BOOT_KEYBOARD; b <= FLOSS_HID_BOOT_MOUSE; b++) {
+            hid_slot_t *s = &hid_slots[HID_BOOT_SLOT0 + b - 1u];
+            s->id = b;
+            s->len = b == FLOSS_HID_BOOT_KEYBOARD ? FLOSS_HID_BOOT_KEYBOARD_LEN : FLOSS_HID_BOOT_MOUSE_MIN_LEN;
+            s->used = (hid.boot_mask & (1u << (b - 1u))) != 0;
+        }
+    }
     floss_timer_init(&hid.tick_timer, hid_tick, NULL);
     floss_timer_init(&hid.reconnect_timer, hid_reconnect_timeout, NULL);
     floss_timer_init(&hid.teardown_timer, hid_teardown_timeout, NULL);

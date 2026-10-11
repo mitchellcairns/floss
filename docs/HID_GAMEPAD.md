@@ -314,3 +314,52 @@ PIDs for development; request your own PID before shipping.
 Pairing works with all of the above using the default security settings
 (Secure Simple Pairing "just works", legacy PIN `0000` fallback for very old
 hosts).
+
+## 9. Keyboards, mice and boot protocol
+
+The same HID layer serves keyboards, mice and combo devices;
+`examples/keyboard/` is a complete keyboard + mouse combo (subclass
+`FLOSS_HID_SUBCLASS_COMBO`, LEDs, typing / pointer demo).
+
+**Boot protocol.** Set `cfg.boot_device = true` and a host that cannot parse
+report descriptors (PC firmware set-up screens, minimal hosts) may switch the
+device to boot protocol with SET_PROTOCOL. The fixed boot formats (USB HID
+1.11 boot appendix) are:
+
+| Report | ID | Payload |
+|---|---|---|
+| Keyboard input | 1 | modifiers, reserved, 6 key codes (8 bytes) |
+| Keyboard output | 1 | LEDs (1 byte) |
+| Mouse input | 2 | buttons, X, Y, optional wheel (3+ bytes) |
+
+The subclass decides which boot reports exist (KEYBOARD, MOUSE or both for
+COMBO). Boot reports have their own mailbox slots:
+
+```c
+floss_hid_set_input(1, report, 8);                           /* report protocol */
+floss_hid_set_boot_input(FLOSS_HID_BOOT_KEYBOARD, report, 8); /* boot protocol */
+```
+
+The stack sends only the slots of the protocol the host selected and, after a
+switch, sends the newest state of the new protocol once. Publishing both
+formats on every change is the simplest correct application; `on_set_protocol`
+and `floss_hid_protocol()` are there if you prefer to publish one. Every
+connection starts in report protocol; SET_PROTOCOL(boot) on a device without
+`boot_device` is answered with ERR_INVALID_PARAMETER. In boot protocol the ID
+byte is always on the wire, so the LED report arrives at `on_output_report`
+as report ID 1 and GET_REPORT(input) answers from the boot slots.
+
+HID over GATT mirrors this: `cfg.boot_keyboard` / `cfg.boot_mouse` add the
+Boot Keyboard Input/Output and Boot Mouse Input characteristics (plus Protocol
+Mode), filled with `floss_hogp_set_boot_input()`.
+
+**Latest wins vs keys and relative motion.** The mailbox sends the newest
+state, so a state replaced before the link carried it is never sent. Hold each
+key state for at least a few milliseconds (the example uses 30 ms per press /
+release when typing), publish relative mouse motion at most once per
+report period, and end a movement with a zero-motion report: reconnects and
+protocol switches re-send the current state.
+
+**Large reports.** Reports larger than the control channel MTU are fragmented
+with HIDP DATC packets in both directions (SET_REPORT reassembly up to report
+ID + `FLOSS_HID_MAX_REPORT` bytes, GET_REPORT answers split to the host's MTU).

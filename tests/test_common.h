@@ -55,6 +55,10 @@ typedef struct {
     unsigned control_ops;
     uint8_t control_op;
     unsigned report_ticks;
+    /** Feature report served to GET_REPORT(FEATURE) when feature_len > 0 (set by the test). */
+    uint8_t feature[64];
+    uint16_t feature_len;
+    unsigned get_reports;
 } floss_tc_hid_log_t;
 
 extern floss_tc_hid_log_t floss_tc_hid;

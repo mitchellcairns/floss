@@ -40,6 +40,7 @@ floss_add_test(test_core     ${FLOSS_TEST_BASE})
 floss_add_test(test_h4       ${FLOSS_TEST_BASE})
 floss_add_test(test_sdp      ${FLOSS_TEST_BASE})
 floss_add_test(test_hid_flow ${FLOSS_TEST_INTEGRATION})
+floss_add_test(test_hid_boot ${FLOSS_TEST_INTEGRATION})
 floss_add_test(test_l2cap    ${FLOSS_TEST_INTEGRATION})
 floss_add_test(test_perf     ${FLOSS_TEST_INTEGRATION})
 
