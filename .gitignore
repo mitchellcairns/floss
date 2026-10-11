@@ -1,0 +1,12 @@
+build/
+build-*/
+*.o
+*.obj
+*.exe
+*.uf2
+*.elf
+*.bin
+*.map
+*.btsnoop
+__pycache__/
+.vscode/
