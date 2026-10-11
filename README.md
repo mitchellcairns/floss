@@ -18,26 +18,30 @@ controllers and hosts implementing the Core Specification HCI.
 
 ## Feature matrix
 
+Status key: **HW** = verified over the air on a Pico W against a Windows host;
+**Unit** = covered by scratch/unit harnesses; **Impl** = implemented, awaiting
+hardware verification.
+
 | Area | Feature | Status |
 |---|---|---|
-| **Classic** | HCI: command queue + flow control, ACL credits, fragmentation/reassembly, connection table | Implementing (milestone 1) |
-| | GAP: discoverable/connectable, Class of Device, EIR, Secure Simple Pairing, bonding, legacy PIN fallback, sniff/role/supervision/flush timeout | Implementing (milestone 1) |
-| | L2CAP basic mode: signaling, configuration, MTU, flush timeout, echo, info | Implementing (milestone 1) |
-| | SDP server: pre-serialised records, continuation, HID + Device ID builders | Implementing (milestone 1) |
-| | HID device: all HIDP transactions, latest-wins input mailbox, paced or on-change reports, reconnect, virtual cable | Implementing (milestone 1) |
-| **LE** | LE GAP: advertising, connections, connection parameter updates (7.5 ms) | In progress |
-| | ATT/GATT server: static attribute table, GAP/GATT/DIS/Battery services | In progress |
-| | SMP: legacy + Secure Connections (P-256 ECDH via controller, software AES-CMAC) | In progress |
-| | HID-over-GATT | In progress |
-| **RFCOMM** | Multiplexer with credit-based flow control + serial port service | In progress |
-| **Transports** | H4 over any non-blocking byte stream (UART, USB-CDC, TCP, pipe) | Implementing |
-| | CYW43 shared bus (Pico W / Pico 2 W) | Implementing |
-| | Simulated controller (tests, desktop demos) | Implementing |
-| **Ports** | Raspberry Pi Pico W / Pico 2 W | Implementing |
-| | POSIX / Windows desktop | Implementing |
+| **Classic** | HCI: command queue + flow control, ACL credits, fragmentation/reassembly, connection table | HW (bring-up), Unit |
+| | GAP: discoverable/connectable, Class of Device, EIR, Secure Simple Pairing, bonding, legacy PIN fallback, sniff/role/supervision/flush timeout | HW (inquiry/EIR), Unit |
+| | L2CAP basic mode: signaling, configuration, MTU, flush timeout, echo, info | Unit |
+| | SDP server: pre-serialised records, continuation, HID + Device ID builders | Unit |
+| | HID device: all HIDP transactions, latest-wins input mailbox, paced or on-change reports, reconnect, virtual cable | Unit |
+| **LE** | LE GAP: advertising, connections, data length, connection parameter updates (7.5 ms) | HW |
+| | ATT/GATT server: static attribute table, GAP/GATT/DIS/Battery services | HW (discovery, reads, CCCD) |
+| | SMP: legacy + Secure Connections (P-256 ECDH via controller, software AES-CMAC) | Unit (spec vectors) |
+| | HID-over-GATT | Impl |
+| **RFCOMM** | Multiplexer with credit-based flow control + serial port service | Unit |
+| **Transports** | H4 over any non-blocking byte stream (UART, USB-CDC, TCP, pipe) | Unit |
+| | CYW43 shared bus (Pico W / Pico 2 W) | HW |
+| | Simulated controller (tests, desktop demos) | Impl |
+| **Ports** | Raspberry Pi Pico W / Pico 2 W (`floss_gamepad`, `floss_le_gamepad`) | HW |
+| | POSIX / Windows desktop | Builds |
 
 See [docs/LE.md](docs/LE.md) and [docs/RFCOMM.md](docs/RFCOMM.md) for the
-designs of the in-progress parts.
+LE and RFCOMM designs.
 
 ## Quick start
 
@@ -108,8 +112,8 @@ src/                  Stack implementation
   floss_internal.h      cross-layer upward hooks (not public API)
   core/                 buffer pool, timers, logs/trace/stats
   hci/ gap/ l2cap/ sdp/ hid/   one directory per Classic layer
-  le/                   LE GAP, ATT/GATT, SMP, HID-over-GATT (in progress)
-  rfcomm/               RFCOMM multiplexer + serial port (in progress)
+  le/                   LE GAP, ATT/GATT, SMP, HID-over-GATT
+  rfcomm/               RFCOMM multiplexer + serial port
 transport/
   h4/                   H4 framing over any floss_stream_t
   cyw43/                CYW43439 shared-bus transport (Pico W)
