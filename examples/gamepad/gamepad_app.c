@@ -153,6 +153,12 @@ static void demo_state(gamepad_state_t *s, uint32_t now_us) {
     /* Triggers ramp up and down with the circle. */
     s->lt = (uint8_t)(angle < 128 ? angle * 2 : (255 - angle) * 2);
     s->rt = (uint8_t)(255 - s->lt);
+    /*
+     * Right stick X is a millisecond counter: it changes every 1 ms, so the
+     * report stream exercises the full pacing rate and a host can measure
+     * report interval / loss directly from the axis value.
+     */
+    s->rx = (int16_t)((int32_t)((now_us / 1000u) % 65535u) - 32767);
 #if GAMEPAD_DEMO_BUTTONS
     /* One button at a time, half a second each. */
     s->buttons |= 1u << ((now_us / 500000u) % 16u);
