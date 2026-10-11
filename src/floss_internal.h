@@ -67,7 +67,7 @@ void floss_gap_require_security(uint16_t handle);
  * 0x0006 SMP). Disconnection of an LE link calls floss_le_on_link_down().
  */
 #if FLOSS_ENABLE_LE
-/** Controller bring-up done (after floss_gap_on_hci_ready settings). LE configures advertising etc. */
+/** Controller bring-up done. Called by GAP once its own settings are applied; LE configures advertising etc. */
 void floss_le_on_hci_ready(void);
 /** LE Meta event (code 0x3E). params point after the subevent code byte. */
 void floss_le_on_hci_event(uint8_t subevent, const uint8_t *params, uint8_t len);
@@ -93,7 +93,7 @@ floss_err_t floss_le_send_fixed(uint16_t handle, uint16_t cid, const uint8_t *da
  */
 void floss_le_on_security_changed(uint16_t handle, uint8_t level);
 
-/** Implemented by SMP. Called by LE. */
+/** Implemented by SMP. floss_smp_init is called by floss_init() (right after floss_le_init); the rest by LE. */
 void floss_smp_init(void);
 /** role: 0 central, 1 peripheral. */
 void floss_smp_on_link_up(uint16_t handle, uint8_t role, uint8_t peer_addr_type, const floss_addr_t *peer_addr);

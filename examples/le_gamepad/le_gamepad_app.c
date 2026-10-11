@@ -32,7 +32,7 @@
 
 #if FLOSS_ENABLE_LE
 
-/* Demo cadence: new state every 4 ms (faster than any connection interval,
+/* Demo cadence: new state every 1 ms (faster than any connection interval,
  * so the mailbox's latest-wins behaviour is exercised). */
 #define DEMO_PERIOD_US 1000u
 

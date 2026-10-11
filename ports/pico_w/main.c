@@ -60,6 +60,24 @@
 #define app_task gamepad_app_task
 #endif
 
+/** Is a host connected and receiving reports (whichever transport the app uses)? */
+static bool app_connected(void) {
+#if FLOSS_PICO_APP_LE
+    return floss_hogp_connected();
+#else
+    return floss_hid_connected();
+#endif
+}
+
+/** Any bond (Classic or LE) stored? */
+static unsigned app_bond_count(void) {
+#if FLOSS_ENABLE_LE
+    return (unsigned)floss_gap_bond_count() + floss_smp_bond_count();
+#else
+    return floss_gap_bond_count();
+#endif
+}
+
 #ifndef FLOSS_PICO_SNOOP
 #define FLOSS_PICO_SNOOP 0
 #endif
@@ -125,10 +143,10 @@ static void led_task(uint32_t now) {
         return; /* the LED lives on the radio chip */
     }
     bool on;
-    if (floss_hid_connected()) {
+    if (app_connected()) {
         on = true;
     } else {
-        bool pairing = user_discoverable || floss_gap_bond_count() == 0;
+        bool pairing = user_discoverable || app_bond_count() == 0;
         uint32_t half = pairing ? LED_FAST_HALF_US : LED_SLOW_HALF_US;
         on = ((now / half) & 1u) != 0;
     }
@@ -159,7 +177,7 @@ static void print_help(void) {
 static void print_banner(void) {
     printf("\n=== FLOSS %s - Pico W " APP_NAME " ===\n", FLOSS_VERSION_STRING);
     print_addr("address: ", &local_addr);
-    printf("bonds: %u, snoop: %s\n", floss_gap_bond_count(), snoop_on ? "on" : "off");
+    printf("bonds: %u, snoop: %s\n", app_bond_count(), snoop_on ? "on" : "off");
     print_help();
 }
 
@@ -316,7 +334,7 @@ static void status_task(uint32_t now) {
     uint32_t delta = sent >= last_sent ? sent - last_sent : sent; /* stats may have been reset */
     last_t = now;
     last_sent = sent;
-    if (!floss_hid_connected()) {
+    if (!app_connected()) {
         return;
     }
     uint32_t rate = (uint32_t)(((uint64_t)delta * 1000000u) / (elapsed ? elapsed : 1u));

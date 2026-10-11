@@ -13,7 +13,7 @@
 // inter-arrival, and latency jitter = host time - device time after removing
 // clock drift (0 = the fastest delivery observed).
 //
-// Build: dotnet build -c Release -o out   (needs the .NET 8+ SDK, Windows 10+).
+// Build: dotnet build -c Release -o out   (needs the .NET 9 SDK, Windows 10+).
 // The OS radio API namespaces below are third-party identifiers, used only to
 // talk to the platform.
 using System.Diagnostics;

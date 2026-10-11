@@ -1,7 +1,7 @@
 # FLOSS - Free, Lightweight, Open Short-range Stack
 # SPDX-License-Identifier: Unlicense
 #
-# Raspberry Pi Pico W port: Classic HID gamepad on the CYW43439.
+# Raspberry Pi Pico W port (CYW43439): Classic HID gamepad and LE HID-over-GATT gamepad firmwares.
 #
 #   cmake -G Ninja -S ports/pico_w -B build-pico
 #   cmake --build build-pico

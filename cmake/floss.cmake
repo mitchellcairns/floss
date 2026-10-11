@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Unlicense
 #
 # Include this file from any CMake project (desktop or embedded SDK) to get:
-#   floss            - the stack (core, HCI, GAP, L2CAP, SDP, HID)
+#   floss            - the stack (core, HCI, GAP, L2CAP, SDP, HID; LE GAP/ATT/GATT/SMP/HID over GATT
+#                      and RFCOMM when FLOSS_ENABLE_LE / FLOSS_ENABLE_RFCOMM are 1)
 #   floss_h4         - H4 transport over a floss_stream_t
 #   floss_sim        - virtual controller transport (tests / desktop demos)
 # Platform transports needing a vendor SDK (e.g. CYW43) are defined by their

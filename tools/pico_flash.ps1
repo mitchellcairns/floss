@@ -7,7 +7,7 @@
 #   powershell -File tools/pico_flash.ps1 -Uf2 build-pico/floss_gamepad.uf2 [-ReadMs 8000]
 #
 # How: opening the board's USB serial port at 1200 baud asks the Pico SDK's
-# stdio_usb to reboot into the ROM bootloader, which mounts the RPI-RP2 drive;
+# stdio_usb to reboot into the ROM bootloader, which mounts the RPI-RP2 (Pico 2: RP2350) drive;
 # copying a .uf2 there flashes and restarts the board. (picotool needs a WinUSB
 # driver on the reset interface, which a stock Windows install lacks.)
 param([Parameter(Mandatory = $true)][string]$Uf2, [int]$ReadMs = 8000)
@@ -20,9 +20,9 @@ if ($port) { try { $p = New-Object System.IO.Ports.SerialPort $port, 1200; $p.Op
 $drive = $null
 for ($i = 0; $i -lt 40 -and -not $drive; $i++) {
     Start-Sleep -Milliseconds 250
-    $drive = (Get-Volume | Where-Object FileSystemLabel -eq 'RPI-RP2').DriveLetter
+    $drive = (Get-Volume | Where-Object { $_.FileSystemLabel -eq 'RPI-RP2' -or $_.FileSystemLabel -eq 'RP2350' }).DriveLetter
 }
-if (-not $drive) { Write-Error "No RPI-RP2 drive: hold BOOTSEL while plugging the board in, then retry."; exit 1 }
+if (-not $drive) { Write-Error "No RPI-RP2 / RP2350 drive: hold BOOTSEL while plugging the board in, then retry."; exit 1 }
 Copy-Item $Uf2 "${drive}:\"
 Write-Host "flashed $Uf2 via ${drive}:"
 
