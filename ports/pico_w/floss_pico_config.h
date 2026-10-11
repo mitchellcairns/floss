@@ -22,8 +22,8 @@
 #define FLOSS_TRANSPORT_MAX_HEADROOM 4
 
 /* The gamepad milestone is Classic HID only. Flip to 1 to build LE / RFCOMM in. */
-#define FLOSS_ENABLE_LE 0
-#define FLOSS_ENABLE_RFCOMM 0
+#define FLOSS_ENABLE_LE 1
+#define FLOSS_ENABLE_RFCOMM 1
 
 /* Compile DEBUG messages in (runtime level starts at INFO; press 'v' on the
  * serial console to see them). Set to FLOSS_LOG_INFO to save flash. */

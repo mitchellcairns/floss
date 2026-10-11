@@ -45,7 +45,20 @@
 #include "floss/floss.h"
 #include "floss_cyw43.h"
 #include "floss_hal_pico.h"
+#ifndef FLOSS_PICO_APP_LE
+#define FLOSS_PICO_APP_LE 0
+#endif
+#if FLOSS_PICO_APP_LE
+#include "le_gamepad_app.h"
+#define APP_NAME "LE HID-over-GATT gamepad"
+#define app_init le_gamepad_app_init
+#define app_task le_gamepad_app_task
+#else
 #include "gamepad_app.h"
+#define APP_NAME "Classic HID gamepad"
+#define app_init gamepad_app_init
+#define app_task gamepad_app_task
+#endif
 
 #ifndef FLOSS_PICO_SNOOP
 #define FLOSS_PICO_SNOOP 0
@@ -81,7 +94,7 @@ void __attribute__((weak)) cyw43_bluetooth_hci_process(void) {
  * this function runs from RAM with interrupts off (no XIP access at all),
  * floats SS, waits for the pin to settle, samples it and restores it.
  */
-static bool __no_inline_not_in_flash_func(bootsel_pressed)(void) {
+static bool __attribute__((unused)) __no_inline_not_in_flash_func(bootsel_pressed)(void) {
     const uint ss_index = 1; /* QSPI pads: SCLK, SS, SD0..SD3 */
     uint32_t irq = save_and_disable_interrupts();
 
@@ -144,7 +157,7 @@ static void print_help(void) {
 }
 
 static void print_banner(void) {
-    printf("\n=== FLOSS %s - Pico W Classic HID gamepad ===\n", FLOSS_VERSION_STRING);
+    printf("\n=== FLOSS %s - Pico W " APP_NAME " ===\n", FLOSS_VERSION_STRING);
     print_addr("address: ", &local_addr);
     printf("bonds: %u, snoop: %s\n", floss_gap_bond_count(), snoop_on ? "on" : "off");
     print_help();
@@ -314,9 +327,9 @@ int main(void) {
 
     floss_gap_add_listener(board_gap_event, NULL);
 
-    err = gamepad_app_init();
+    err = app_init();
     if (err != FLOSS_OK) {
-        fatal("gamepad_app_init", err);
+        fatal("app_init", err);
     }
 
     print_banner();
@@ -334,9 +347,11 @@ int main(void) {
         uint32_t now = time_us_32();
         if (floss_time_diff(now, next_bootsel) >= 0) {
             next_bootsel = now + BOOTSEL_PERIOD_US;
+#if !FLOSS_PICO_APP_LE
             gamepad_app_set_buttons(bootsel_pressed() ? 0x0001u : 0u);
+#endif
         }
-        gamepad_app_task();
+        app_task();
 
         led_task(now);
         console_task(now);
