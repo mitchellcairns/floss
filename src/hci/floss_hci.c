@@ -102,6 +102,65 @@ static void conn_release(floss_conn_t *c) {
     c->state = FLOSS_CONN_FREE;
 }
 
+static void on_conn_complete(const uint8_t *p, uint8_t len);
+
+/** Re-arm the pending-slot guard for the oldest OUTGOING/INCOMING slot (stop if none). */
+static void conn_pending_arm(void) {
+    uint32_t now = floss_hal_time_us();
+    uint32_t wait = 0;
+    bool any = false;
+    for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+        const floss_conn_t *c = &G.conns[i];
+        if (c->state != FLOSS_CONN_OUTGOING && c->state != FLOSS_CONN_INCOMING) {
+            continue;
+        }
+        uint32_t age = now - c->pending_since_us;
+        uint32_t left = age >= FLOSS_HCI_CONN_PENDING_TIMEOUT_US ? 0 : FLOSS_HCI_CONN_PENDING_TIMEOUT_US - age;
+        if (!any || left < wait) {
+            wait = left;
+        }
+        any = true;
+    }
+    if (any) {
+        floss_timer_start(&G.pending_timer, wait);
+    } else {
+        floss_timer_stop(&G.pending_timer);
+    }
+}
+
+/** A slot now waits for Connection Complete. */
+static void conn_pending_start(floss_conn_t *c, floss_conn_state_t state) {
+    c->state = state;
+    c->pending_since_us = floss_hal_time_us();
+    conn_pending_arm();
+}
+
+/**
+ * The controller never reported how a page / accepted request ended (it
+ * rejected the command, or is broken). Fail the slot exactly as a Connection
+ * Complete with Connection Timeout would, so GAP sees the usual outcome.
+ */
+static void conn_pending_timeout(floss_timer_t *timer, void *arg) {
+    FLOSS_UNUSED(timer);
+    FLOSS_UNUSED(arg);
+    uint32_t now = floss_hal_time_us();
+    for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+        floss_conn_t *c = &G.conns[i];
+        if ((c->state == FLOSS_CONN_OUTGOING || c->state == FLOSS_CONN_INCOMING) &&
+            now - c->pending_since_us >= FLOSS_HCI_CONN_PENDING_TIMEOUT_US) {
+            /* Status(1) Handle(2) BD_ADDR(6) Link_Type(1) Encryption_Enabled(1) */
+            uint8_t e[11] = {FLOSS_HCI_ERR_CONN_TIMEOUT, 0, 0};
+            memcpy(&e[3], c->addr.b, 6);
+            e[9] = 0x01; /* ACL */
+            e[10] = 0;
+            FLOSS_LOGW(HCI, "no Connection Complete for %s slot %u, failing it",
+                       c->state == FLOSS_CONN_OUTGOING ? "outgoing" : "incoming", i);
+            on_conn_complete(e, sizeof(e));
+        }
+    }
+    conn_pending_arm();
+}
+
 /** First pending outgoing Classic slot (only one page can be in progress at a time). */
 static floss_conn_t *conn_first_outgoing(void) {
     for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
@@ -191,9 +250,9 @@ static void note_outgoing_command(uint16_t opcode, const uint8_t *params, uint8_
         FLOSS_LOGW(HCI, "no free connection slot for outgoing page");
         return;
     }
-    c->state = FLOSS_CONN_OUTGOING;
     c->addr = addr;
     c->initiator = true;
+    conn_pending_start(c, FLOSS_CONN_OUTGOING);
 }
 
 static floss_err_t cmd_enqueue(uint16_t opcode, const void *params, uint8_t len, floss_hci_cmd_cb cb, void *ctx,
@@ -254,7 +313,22 @@ floss_err_t floss_hci_cmd_internal(uint16_t opcode, const void *params, uint8_t 
     return cmd_enqueue(opcode, params, len, cb, ctx, true);
 }
 
+/**
+ * Commands are waiting but the controller granted no credit and none is
+ * outstanding (e.g. a Command Complete/Status with Num_HCI_Command_Packets = 0
+ * for a command we never sent). A conforming controller follows up with a
+ * NOP that returns a credit; guard against one that never does, or the queue
+ * (and every buffer in it) would be stuck forever.
+ */
+static void cmd_watch_credits(void) {
+    if (G.started && !G.cmd_inflight && G.cmd_credits == 0 && G.cmdq_count > 0 &&
+        !floss_timer_active(&G.cmd_timer)) {
+        floss_timer_start(&G.cmd_timer, FLOSS_HCI_CMD_TIMEOUT_US);
+    }
+}
+
 void floss_hci_cmd_pump(void) {
+    cmd_watch_credits();
     while (G.started && !G.cmd_inflight && G.cmd_credits > 0 && G.cmdq_count > 0) {
         floss_hci_cmd_slot_t slot = G.cmdq[G.cmdq_head];
         floss_buf_t *b = slot.buf;
@@ -340,6 +414,13 @@ static void cmd_timeout(floss_timer_t *timer, void *arg) {
     FLOSS_UNUSED(timer);
     FLOSS_UNUSED(arg);
     if (!G.cmd_inflight) {
+        if (G.cmd_credits == 0 && G.cmdq_count > 0) {
+            FLOSS_STAT_INC(cmd_timeouts);
+            FLOSS_LOGE(HCI, "controller granted no command credit for %u ms, assuming one",
+                       (unsigned)(FLOSS_HCI_CMD_TIMEOUT_US / 1000u));
+            G.cmd_credits = 1;
+            floss_hci_cmd_pump();
+        }
         return;
     }
     FLOSS_STAT_INC(cmd_timeouts);
@@ -395,8 +476,8 @@ static void on_conn_request(const uint8_t *p, uint8_t len) {
         if (!conn_find(&addr, false)) {
             floss_conn_t *c = conn_alloc();
             if (c) {
-                c->state = FLOSS_CONN_INCOMING;
                 c->addr = addr;
+                conn_pending_start(c, FLOSS_CONN_INCOMING);
             } else {
                 FLOSS_LOGW(HCI, "connection request but no free slot");
             }
@@ -435,6 +516,17 @@ static void on_conn_complete(const uint8_t *p, uint8_t len) {
     floss_conn_t *c = conn_find(&addr, false);
     if (c && conn_has_handle(c)) {
         c = NULL; /* stale open link with same peer should not exist; never clobber it */
+    }
+
+    if (status == FLOSS_HCI_SUCCESS && floss_hci_conn_by_handle(handle)) {
+        /* A broken controller reusing a live handle: two slots with one handle
+         * would make every lookup ambiguous. Ignore the event. */
+        FLOSS_LOGE(HCI, "Connection Complete for handle 0x%03x already in use, ignored", handle);
+        FLOSS_STAT_INC(rx_dropped);
+        if (c) {
+            conn_release(c);
+        }
+        return;
     }
 
     if (status == FLOSS_HCI_SUCCESS) {
@@ -581,8 +673,19 @@ static void on_le_meta(const uint8_t *p, uint8_t len) {
     }
     uint8_t sub = p[0];
 #if FLOSS_ENABLE_LE
-    if ((sub == FLOSS_LE_SUBEVT_CONN_COMPLETE || sub == FLOSS_LE_SUBEVT_ENHANCED_CONN_COMPLETE) && len >= 12 &&
-        p[1] == FLOSS_HCI_SUCCESS) {
+    bool conn_evt = sub == FLOSS_LE_SUBEVT_CONN_COMPLETE || sub == FLOSS_LE_SUBEVT_ENHANCED_CONN_COMPLETE;
+    if (conn_evt && len < (sub == FLOSS_LE_SUBEVT_CONN_COMPLETE ? 1 + 18 : 1 + 30)) {
+        /* The LE module ignores short ones too: never open a slot it does not know. */
+        FLOSS_STAT_INC(rx_dropped);
+        return;
+    }
+    if (conn_evt && p[1] == FLOSS_HCI_SUCCESS && floss_hci_conn_by_handle(floss_get_le16(p + 2) & 0x0FFF)) {
+        FLOSS_LOGE(HCI, "LE Connection Complete for handle 0x%03x already in use, ignored",
+                   floss_get_le16(p + 2) & 0x0FFF);
+        FLOSS_STAT_INC(rx_dropped);
+        return;
+    }
+    if (conn_evt && p[1] == FLOSS_HCI_SUCCESS) {
         floss_conn_t *c = conn_alloc();
         if (c) {
             c->le = true;
@@ -593,7 +696,21 @@ static void on_le_meta(const uint8_t *p, uint8_t len) {
             memcpy(c->addr.b, p + 6, 6);
             conn_opened(c, floss_get_le16(p + 2) & 0x0FFF);
         } else {
-            FLOSS_LOGE(HCI, "LE link up but connection table full");
+            /* Without a slot the link could never be torn down cleanly: drop it,
+             * and let the LE module see a failed connection (it restarts
+             * advertising) instead of a link HCI does not know. */
+            uint16_t handle = floss_get_le16(p + 2) & 0x0FFF;
+            FLOSS_LOGE(HCI, "LE link 0x%03x up but connection table full, disconnecting", handle);
+            uint8_t dp[3];
+            floss_put_le16(dp, handle);
+            dp[2] = FLOSS_HCI_ERR_REJECTED_LIMITED_RESOURCES;
+            floss_hci_cmd(FLOSS_HCI_DISCONNECT, dp, sizeof(dp), NULL, NULL);
+            uint8_t failed[30];
+            uint8_t n = (uint8_t)FLOSS_MIN((uint16_t)(len - 1), (uint16_t)sizeof(failed));
+            memcpy(failed, p + 1, n);
+            failed[0] = FLOSS_HCI_ERR_REJECTED_LIMITED_RESOURCES; /* Status */
+            floss_le_on_hci_event(sub, failed, n);
+            return;
         }
     }
     floss_le_on_hci_event(sub, p + 1, (uint8_t)(len - 1));
@@ -689,6 +806,7 @@ void floss_hci_init(floss_transport_t *transport, const floss_chipset_t *chipset
         floss_bufq_init(&G.conns[i].txq);
     }
     floss_timer_init(&G.cmd_timer, cmd_timeout, NULL);
+    floss_timer_init(&G.pending_timer, conn_pending_timeout, NULL);
 }
 
 floss_err_t floss_hci_start(void) {

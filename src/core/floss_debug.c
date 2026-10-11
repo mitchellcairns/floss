@@ -537,6 +537,7 @@ void floss_stats_dump(void)
     dump_counter("cmd_timeouts", s->cmd_timeouts);
     dump_counter("cmd_failures", s->cmd_failures);
     dump_counter("acl_credit_stalls", s->acl_credit_stalls);
+    dump_counter("acl_tx_dropped", s->acl_tx_dropped);
     dump_counter("buf_alloc_failures", s->buf_alloc_failures);
     dump_counter("rx_dropped", s->rx_dropped);
     out("  %-24s %10u / %u (low watermark %u)", "buf_free", (unsigned)floss_buf_free_count(),

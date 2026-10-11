@@ -70,6 +70,15 @@
 #define FLOSS_HCI_CMD_TIMEOUT_US 2000000u
 #endif
 
+/**
+ * Max PDUs queued per link waiting for controller buffers. A peer that stops
+ * acknowledging while it keeps sending requests would otherwise pin every
+ * pool buffer with responses; past this depth sends fail with BUSY.
+ */
+#ifndef FLOSS_ACL_TXQ_MAX
+#define FLOSS_ACL_TXQ_MAX (FLOSS_BUF_COUNT / 2)
+#endif
+
 /** Max ACL packets we track in flight per link (for ack-latency stats). */
 #ifndef FLOSS_ACL_INFLIGHT_MAX
 #define FLOSS_ACL_INFLIGHT_MAX 16

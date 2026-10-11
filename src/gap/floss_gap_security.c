@@ -311,7 +311,7 @@ static void on_link_key_notification(const floss_addr_t *addr, const uint8_t *p,
         FLOSS_LOGW(GAP, "peer uses a DEBUG link key (SSP debug mode): link is not private");
     }
 
-    floss_gap_link_t *l = floss_gap_link_get(addr);
+    floss_gap_link_t *l = floss_gap_link_for_event(addr);
     if (l) {
         l->pairing = false;
         l->session_key = key;
@@ -343,7 +343,7 @@ static void on_io_cap_request(const floss_addr_t *addr)
     p[8] = auth;
     floss_hci_cmd(FLOSS_HCI_IO_CAPABILITY_REQUEST_REPLY, p, sizeof(p), NULL, NULL);
 
-    floss_gap_link_t *l = floss_gap_link_get(addr);
+    floss_gap_link_t *l = floss_gap_link_for_event(addr);
     if (l) {
         l->pairing = true;
         l->pairing_fail_reported = false;
@@ -361,7 +361,7 @@ static void on_user_confirm_request(const floss_addr_t *addr, const uint8_t *p, 
         cmd_addr(FLOSS_HCI_USER_CONFIRM_REQUEST_REPLY, addr);
         return;
     }
-    floss_gap_link_t *l = floss_gap_link_get(addr);
+    floss_gap_link_t *l = floss_gap_link_for_event(addr);
     if (!l) {
         cmd_addr(FLOSS_HCI_USER_CONFIRM_REQUEST_NEG_REPLY, addr);
         return;
@@ -407,7 +407,7 @@ static void on_pin_code_request(const floss_addr_t *addr)
     memcpy(&p[7], pin, p[6]);
     floss_hci_cmd(FLOSS_HCI_PIN_CODE_REQUEST_REPLY, p, sizeof(p), NULL, NULL);
 
-    floss_gap_link_t *l = floss_gap_link_get(addr);
+    floss_gap_link_t *l = floss_gap_link_for_event(addr);
     if (l) {
         l->pairing = true;
         l->pairing_fail_reported = false;

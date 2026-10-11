@@ -322,6 +322,11 @@ static bool evt_enabled(uint8_t code, const uint8_t *params, uint8_t len) {
 }
 
 static sim_pkt_t *emit_event(uint8_t code, const uint8_t *params, uint8_t len) {
+    if (code == FLOSS_EVT_LE_META && len > 0 && sim.cfg.drop_le_subevent != 0 &&
+        params[0] == sim.cfg.drop_le_subevent) {
+        FLOSS_LOGW(TRANSPORT, "sim: LE subevent 0x%02x lost (drop_le_subevent)", (unsigned)params[0]);
+        return NULL;
+    }
     if (!evt_enabled(code, params, len)) {
         sim.stats.masked_events++;
         if (code == FLOSS_EVT_LE_META) {

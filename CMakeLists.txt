@@ -3,8 +3,14 @@
 #
 # Desktop build: library + unit/integration tests + host demo.
 #   cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+#   add -DFLOSS_BUILD_FUZZ=ON for the sanitized fuzz harness (tests/fuzz).
 # Embedded builds live in ports/<platform>/ (e.g. ports/pico_w).
 cmake_minimum_required(VERSION 3.13)
+option(FLOSS_BUILD_FUZZ "Build the sanitized fuzz harness (tests/fuzz) and register it with ctest" OFF)
+if(FLOSS_BUILD_FUZZ AND POLICY CMP0091)
+    # MSVC runtime selected per target: the fuzz target needs the release CRT for ASan.
+    cmake_policy(SET CMP0091 NEW)
+endif()
 project(floss C)
 
 option(FLOSS_BUILD_TESTS "Build the test suite" ON)

@@ -182,7 +182,9 @@ int floss_gatt_read_value(uint16_t conn, uint16_t handle, uint16_t offset, uint8
         return -FLOSS_ATT_ERR_INVALID_HANDLE;
     }
     if (a->read) {
-        return a->read(conn, handle, a, offset, out, cap);
+        int n = a->read(conn, handle, a, offset, out, cap);
+        /* Callers size buffers by cap: never trust a callback's count past it. */
+        return n > (int)cap ? (int)cap : n;
     }
 
     uint8_t tmp[19]; /* largest generated value: 128-bit characteristic declaration */

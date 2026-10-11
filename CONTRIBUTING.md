@@ -66,9 +66,22 @@ ctest --test-dir build --output-on-failure
 ```
 
 CMake options: `FLOSS_BUILD_TESTS` (ON), `FLOSS_BUILD_POSIX` (ON),
-`FLOSS_WERROR` (ON). Tests run against the simulated controller in
+`FLOSS_WERROR` (ON), `FLOSS_BUILD_FUZZ` (OFF). Tests run against the simulated controller in
 `transport/sim`; new protocol features need a test there (happy path plus at
-least one malformed-input case). Hardware changes: also build `ports/pico_w`
+least one malformed-input case).
+
+Parsers of peer or controller input are also covered by a deterministic fuzz
+harness (`tests/fuzz/floss_fuzz.c`, built with AddressSanitizer and UBSan
+where the toolchain has them, and run by ctest when enabled):
+
+```sh
+cmake -S . -B build-fuzz -G Ninja -DFLOSS_BUILD_FUZZ=ON
+cmake --build build-fuzz && ctest --test-dir build-fuzz -L fuzz
+build-fuzz/tests/floss_fuzz --seed 42 --iters 100000 rfcomm   # one target, longer
+```
+
+A failure prints the seed; the same seed and `--iters` replay it exactly
+(`--verbose` shows the stack's logs). Hardware changes: also build `ports/pico_w`
 and attach a short `floss_stats_dump()` or snoop excerpt to the PR if timing
 is involved.
 

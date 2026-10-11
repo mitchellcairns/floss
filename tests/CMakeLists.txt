@@ -45,3 +45,51 @@ floss_add_test(test_perf     ${FLOSS_TEST_INTEGRATION})
 
 # The benchmark is informative; keep it out of quick default runs' critical path.
 set_tests_properties(test_perf PROPERTIES LABELS perf)
+
+# ---------------------------------------------------------------------------
+# Fuzz harness (-DFLOSS_BUILD_FUZZ=ON). The whole stack, the sim and the test
+# framework are compiled straight into one executable so every object gets
+# the sanitizers; the regular floss library and suites are left untouched.
+#   build/tests/floss_fuzz [--seed N] [--iters N] [--verbose] [target]
+# ---------------------------------------------------------------------------
+if(FLOSS_BUILD_FUZZ)
+    set(FLOSS_FUZZ_SAN_FLAGS "")
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND NOT MSVC) # GCC-style driver (not cl / clang-cl)
+        include(CheckCSourceCompiles)
+        set(CMAKE_REQUIRED_FLAGS "-fsanitize=address,undefined")
+        set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address,undefined")
+        if(WIN32)
+            # ASan on Windows needs the release static CRT (no debug CRT).
+            set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+        endif()
+        check_c_source_compiles("int main(void) { return 0; }" FLOSS_HAVE_ASAN_UBSAN)
+        unset(CMAKE_MSVC_RUNTIME_LIBRARY)
+        unset(CMAKE_REQUIRED_FLAGS)
+        unset(CMAKE_REQUIRED_LINK_OPTIONS)
+        if(FLOSS_HAVE_ASAN_UBSAN)
+            set(FLOSS_FUZZ_SAN_FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+        else()
+            message(WARNING "floss_fuzz: toolchain lacks -fsanitize=address,undefined; building without sanitizers")
+        endif()
+    endif()
+
+    add_executable(floss_fuzz
+        ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/floss_fuzz.c
+        ${FLOSS_TEST_INTEGRATION}
+        ${FLOSS_SOURCES}
+        ${FLOSS_SIM_SOURCES}
+        ${FLOSS_ROOT}/transport/h4/floss_h4.c)
+    target_include_directories(floss_fuzz PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${FLOSS_ROOT}/include ${FLOSS_ROOT}/src
+        ${FLOSS_ROOT}/transport/sim ${FLOSS_ROOT}/transport/h4)
+    set_target_properties(floss_fuzz PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    if(WIN32 AND FLOSS_FUZZ_SAN_FLAGS)
+        set_target_properties(floss_fuzz PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND NOT MSVC)
+        target_compile_options(floss_fuzz PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror -g ${FLOSS_FUZZ_SAN_FLAGS})
+        target_link_options(floss_fuzz PRIVATE ${FLOSS_FUZZ_SAN_FLAGS})
+    endif()
+    add_test(NAME floss_fuzz COMMAND floss_fuzz --seed 1 --iters 20000)
+    set_tests_properties(floss_fuzz PROPERTIES LABELS fuzz TIMEOUT 300 ENVIRONMENT "FLOSS_TEST_QUIET=1")
+endif()

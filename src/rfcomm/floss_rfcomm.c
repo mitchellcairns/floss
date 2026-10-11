@@ -222,15 +222,21 @@ void floss_rfcomm_dlc_rx(floss_rfcomm_dlc_t *dlc, int credits, const uint8_t *da
     if (len == 0 || dlc->state == FLOSS_RFCOMM_DLC_FREE) {
         return;
     }
+    /* Protocol violations are dropped, never delivered: the application sized
+     * its buffers for dlc->mtu and bounds its backlog with credits. */
     if (dlc->cfc) {
-        if (dlc->rx_credits > 0) {
-            dlc->rx_credits--;
-        } else {
-            RFC_LOGW("DLCI %u: peer sent without credit", dlc->dlci);
+        if (dlc->rx_credits == 0) {
+            RFC_LOGW("DLCI %u: peer sent without credit, frame dropped", dlc->dlci);
+            FLOSS_STAT_INC(rx_dropped);
+            return;
         }
+        dlc->rx_credits--;
     }
     if (len > dlc->mtu) {
-        RFC_LOGW("DLCI %u: frame of %u exceeds mtu %u", dlc->dlci, len, dlc->mtu);
+        RFC_LOGW("DLCI %u: frame of %u exceeds mtu %u, dropped", dlc->dlci, len, dlc->mtu);
+        FLOSS_STAT_INC(rx_dropped);
+        floss_rfcomm_dlc_replenish(dlc); /* it still used a credit */
+        return;
     }
     if (dlc->ops != NULL && dlc->ops->on_data != NULL) {
         dlc->ops->on_data(dlc, data, len);
