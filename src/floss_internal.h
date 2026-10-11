@@ -79,6 +79,37 @@ void floss_le_on_pdu(uint16_t handle, const uint8_t *pdu, uint16_t len);
 void floss_le_on_link_down(uint16_t handle, uint8_t reason);
 /** ACL credits freed (LE buffers or shared). */
 void floss_le_on_credits(void);
+/** Module init (called by floss_init). */
+void floss_le_init(void);
+
+/* ---- LE (src/le/floss_le.c, ATT/GATT) <-> SMP (src/le/floss_smp*.c) ---- */
+
+/** Implemented by LE: send `len` bytes on fixed channel `cid` (adds L2CAP header). */
+floss_err_t floss_le_send_fixed(uint16_t handle, uint16_t cid, const uint8_t *data, uint16_t len);
+/**
+ * Implemented by LE: SMP reports the link's new security level
+ * (1 = none, 2 = encrypted unauthenticated, 3 = encrypted authenticated,
+ * 4 = LE Secure Connections authenticated). ATT uses it for permission checks.
+ */
+void floss_le_on_security_changed(uint16_t handle, uint8_t level);
+
+/** Implemented by SMP. Called by LE. */
+void floss_smp_init(void);
+/** role: 0 central, 1 peripheral. */
+void floss_smp_on_link_up(uint16_t handle, uint8_t role, uint8_t peer_addr_type, const floss_addr_t *peer_addr);
+void floss_smp_on_link_down(uint16_t handle);
+/** SMP PDU payload (after the L2CAP header) received on CID 0x0006. */
+void floss_smp_on_pdu(uint16_t handle, const uint8_t *data, uint16_t len);
+/** LE meta subevents SMP needs: 0x05 LTK Request, 0x08 Read Local P-256 Public Key Complete, 0x09 Generate DHKey Complete. */
+void floss_smp_on_le_event(uint8_t subevent, const uint8_t *params, uint8_t len);
+/** Encryption change / key refresh on an LE link. */
+void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted);
+#endif
+
+/* ===================== RFCOMM (FLOSS_ENABLE_RFCOMM) ====================== */
+#if FLOSS_ENABLE_RFCOMM
+/** Module init (called by floss_init). Registers PSM 0x0003. */
+void floss_rfcomm_init(void);
 #endif
 
 /* ===================== core ============================================== */
