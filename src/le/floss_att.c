@@ -104,7 +104,7 @@ static void att_request_security(att_link_t *L) {
     const floss_le_link_t *l = floss_le_link(L->conn);
     if (l && l->role == 1 && !L->sec_requested) {
         L->sec_requested = true;
-        FLOSS_LOGI(GAP, "att: client hit a secured attribute, requesting security");
+        FLOSS_LOGI(LE, "att: client hit a secured attribute, requesting security");
         (void)floss_smp_request_security(L->conn);
     }
 }
@@ -114,7 +114,7 @@ static void att_error(att_link_t *L, uint8_t req, uint16_t handle, uint8_t err) 
     L->rsp[1] = req;
     floss_put_le16(&L->rsp[2], handle);
     L->rsp[4] = err;
-    FLOSS_LOGD(GAP, "att: error req 0x%02x handle 0x%04x err 0x%02x", (unsigned)req, (unsigned)handle,
+    FLOSS_LOGD(LE, "att: error req 0x%02x handle 0x%04x err 0x%02x", (unsigned)req, (unsigned)handle,
                (unsigned)err);
     att_send_rsp(L, 5);
     if (err == FLOSS_ATT_ERR_INSUFFICIENT_ENC || err == FLOSS_ATT_ERR_INSUFFICIENT_AUTHEN) {
@@ -503,7 +503,7 @@ static void att_write(att_link_t *L, const uint8_t *p, uint16_t len, bool cmd) {
     }
     if (cmd) {
         if (err) {
-            FLOSS_LOGD(GAP, "att: write cmd 0x%04x dropped (0x%02x)", (unsigned)h, (unsigned)err);
+            FLOSS_LOGD(LE, "att: write cmd 0x%04x dropped (0x%02x)", (unsigned)h, (unsigned)err);
             if (err == FLOSS_ATT_ERR_INSUFFICIENT_ENC || err == FLOSS_ATT_ERR_INSUFFICIENT_AUTHEN) {
                 att_request_security(L);
             }
@@ -633,7 +633,7 @@ void floss_att_on_pdu(uint16_t conn, const uint8_t *pdu, uint16_t len) {
         return;
     }
     uint8_t op = pdu[0];
-    FLOSS_LOGT(GAP, "att: rx op 0x%02x len %u", (unsigned)op, (unsigned)len);
+    FLOSS_LOGT(LE, "att: rx op 0x%02x len %u", (unsigned)op, (unsigned)len);
     switch (op) {
     case FLOSS_ATT_MTU_REQ:
         att_exchange_mtu(L, pdu, len);
@@ -677,7 +677,7 @@ void floss_att_on_pdu(uint16_t conn, const uint8_t *pdu, uint16_t len) {
     default:
         if (op & FLOSS_ATT_OP_COMMAND_FLAG) {
             /* Signed Write Command and unknown commands: silently ignored. */
-            FLOSS_LOGD(GAP, "att: ignoring command 0x%02x", (unsigned)op);
+            FLOSS_LOGD(LE, "att: ignoring command 0x%02x", (unsigned)op);
         } else if (!att_is_unsolicited(op)) {
             att_error(L, op, 0, FLOSS_ATT_ERR_REQUEST_NOT_SUPPORTED);
         }
@@ -756,7 +756,7 @@ static void att_ind_timeout(floss_timer_t *t, void *arg) {
     if (!L->used || !L->ind_pending) {
         return;
     }
-    FLOSS_LOGW(GAP, "att: indication 0x%04x not confirmed in 30 s, closing link", (unsigned)L->ind_handle);
+    FLOSS_LOGW(LE, "att: indication 0x%04x not confirmed in 30 s, closing link", (unsigned)L->ind_handle);
     L->ind_pending = false;
     floss_le_evt_t evt = {.type = FLOSS_LE_EVT_INDICATION_DONE,
                           .handle = L->conn,

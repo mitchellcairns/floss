@@ -138,7 +138,7 @@ bool floss_le_local_feature(uint8_t bit) {
 
 static void log_cmd_status(void *ctx, uint16_t opcode, uint8_t status, const uint8_t *ret, uint16_t ret_len) {
     if (status) {
-        FLOSS_LOGW(GAP, "le: cmd 0x%04x failed: %s", (unsigned)opcode, floss_hci_status_str(status));
+        FLOSS_LOGW(LE, "le: cmd 0x%04x failed: %s", (unsigned)opcode, floss_hci_status_str(status));
     }
 }
 
@@ -220,7 +220,7 @@ static void ensure_static_addr(void) {
     s_le.static_addr_valid = true;
     char str[18];
     floss_addr_to_str(&s_le.static_addr, str);
-    FLOSS_LOGI(GAP, "le: static random address %s", str);
+    FLOSS_LOGI(LE, "le: static random address %s", str);
 }
 
 void floss_le_own_address(floss_addr_t *addr, uint8_t *addr_type) {
@@ -317,14 +317,14 @@ void floss_le_adv_params_defaults(floss_le_adv_params_t *p) {
 static void adv_enable_done(void *ctx, uint16_t opcode, uint8_t status, const uint8_t *ret, uint16_t ret_len) {
     bool enable = ctx != NULL;
     if (status) {
-        FLOSS_LOGW(GAP, "le: advertising %s failed: %s", enable ? "enable" : "disable",
+        FLOSS_LOGW(LE, "le: advertising %s failed: %s", enable ? "enable" : "disable",
                    floss_hci_status_str(status));
         s_le.adv_target = s_le.adv_on;
         return;
     }
     if (s_le.adv_on != enable) {
         s_le.adv_on = enable;
-        FLOSS_LOGI(GAP, "le: advertising %s", enable ? "on" : "off");
+        FLOSS_LOGI(LE, "le: advertising %s", enable ? "on" : "off");
         emit_link_evt(enable ? FLOSS_LE_EVT_ADV_STARTED : FLOSS_LE_EVT_ADV_STOPPED, NULL, 0);
     }
 }
@@ -570,7 +570,7 @@ static void conn_update_status(void *ctx, uint16_t opcode, uint8_t status, const
     if (s == NULL || status == 0) {
         return;
     }
-    FLOSS_LOGW(GAP, "le: connection update refused (%s)", floss_hci_status_str(status));
+    FLOSS_LOGW(LE, "le: connection update refused (%s)", floss_hci_status_str(status));
     if (s->param_state == PARAM_HCI_PENDING && s->info.role == 1) {
         send_l2cap_param_req(s);
     } else {
@@ -588,7 +588,7 @@ floss_err_t floss_le_request_conn_params(uint16_t handle, const floss_le_conn_pa
         return FLOSS_ERR_INVALID;
     }
     s->param_req = *p;
-    FLOSS_LOGI(GAP, "le: requesting interval %u-%u latency %u timeout %u", (unsigned)p->interval_min,
+    FLOSS_LOGI(LE, "le: requesting interval %u-%u latency %u timeout %u", (unsigned)p->interval_min,
                (unsigned)p->interval_max, (unsigned)p->latency, (unsigned)p->timeout);
     if (s->info.role == 0 || floss_le_local_feature(FLOSS_LE_FEAT_CONN_PARAM_REQ)) {
         s->param_state = PARAM_HCI_PENDING;
@@ -658,7 +658,7 @@ void floss_le_set_att_mtu(uint16_t handle, uint16_t mtu) {
         return;
     }
     s->info.att_mtu = mtu;
-    FLOSS_LOGI(GAP, "le: ATT MTU %u", (unsigned)mtu);
+    FLOSS_LOGI(LE, "le: ATT MTU %u", (unsigned)mtu);
     emit_link_evt(FLOSS_LE_EVT_MTU, s, 0);
 }
 
@@ -720,7 +720,7 @@ static void on_conn_complete(const uint8_t *p, uint8_t len, bool enhanced) {
         }
     }
     if (status) {
-        FLOSS_LOGW(GAP, "le: connection failed: %s", floss_hci_status_str(status));
+        FLOSS_LOGW(LE, "le: connection failed: %s", floss_hci_status_str(status));
         emit_link_evt(FLOSS_LE_EVT_CONNECT_FAILED, NULL, status);
         adv_update();
         return;
@@ -734,7 +734,7 @@ static void on_conn_complete(const uint8_t *p, uint8_t len, bool enhanced) {
         }
     }
     if (s == NULL) {
-        FLOSS_LOGE(GAP, "le: no slot for link 0x%04x", (unsigned)handle);
+        FLOSS_LOGE(LE, "le: no slot for link 0x%04x", (unsigned)handle);
         uint8_t d[3];
         floss_put_le16(d, handle);
         d[2] = FLOSS_HCI_ERR_REJECTED_LIMITED_RESOURCES;
@@ -758,7 +758,7 @@ static void on_conn_complete(const uint8_t *p, uint8_t len, bool enhanced) {
 
     char str[18];
     floss_addr_to_str(&s->info.peer, str);
-    FLOSS_LOGI(GAP, "le: connected 0x%04x %s as %s, interval %u.%02u ms", (unsigned)handle, str,
+    FLOSS_LOGI(LE, "le: connected 0x%04x %s as %s, interval %u.%02u ms", (unsigned)handle, str,
                role ? "peripheral" : "central", (unsigned)(s->info.interval * 125u / 100u),
                (unsigned)(s->info.interval * 125u % 100u));
 
@@ -792,7 +792,7 @@ static void on_conn_update_complete(const uint8_t *p, uint8_t len) {
         s->info.interval = floss_get_le16(&p[3]);
         s->info.latency = floss_get_le16(&p[5]);
         s->info.timeout = floss_get_le16(&p[7]);
-        FLOSS_LOGI(GAP, "le: interval %u.%02u ms latency %u timeout %u ms", (unsigned)(s->info.interval * 125u / 100u),
+        FLOSS_LOGI(LE, "le: interval %u.%02u ms latency %u timeout %u ms", (unsigned)(s->info.interval * 125u / 100u),
                    (unsigned)(s->info.interval * 125u % 100u), (unsigned)s->info.latency,
                    (unsigned)(s->info.timeout * 10u));
     }
@@ -818,7 +818,7 @@ static void on_data_length_change(const uint8_t *p, uint8_t len) {
         return;
     }
     s->info.tx_octets = floss_get_le16(&p[2]);
-    FLOSS_LOGI(GAP, "le: data length tx %u rx %u", (unsigned)s->info.tx_octets, (unsigned)floss_get_le16(&p[6]));
+    FLOSS_LOGI(LE, "le: data length tx %u rx %u", (unsigned)s->info.tx_octets, (unsigned)floss_get_le16(&p[6]));
     emit_link_evt(FLOSS_LE_EVT_DATA_LENGTH, s, 0);
 }
 
@@ -833,7 +833,7 @@ static void on_phy_update(const uint8_t *p, uint8_t len) {
     if (p[0] == 0) {
         s->info.tx_phy = p[3];
         s->info.rx_phy = p[4];
-        FLOSS_LOGI(GAP, "le: PHY tx %u rx %u", (unsigned)p[3], (unsigned)p[4]);
+        FLOSS_LOGI(LE, "le: PHY tx %u rx %u", (unsigned)p[3], (unsigned)p[4]);
     }
     emit_link_evt(FLOSS_LE_EVT_PHY, s, p[0]);
 }
@@ -878,7 +878,7 @@ static void le_signaling(le_slot_t *s, const uint8_t *p, uint16_t len) {
     switch (code) {
     case FLOSS_LE_SIG_COMMAND_REJECT:
         if (s->param_state == PARAM_L2CAP_PENDING && id == s->sig_id) {
-            FLOSS_LOGW(GAP, "le: peer rejected the parameter update request");
+            FLOSS_LOGW(LE, "le: peer rejected the parameter update request");
             s->param_state = PARAM_IDLE;
             emit_link_evt(FLOSS_LE_EVT_CONN_PARAMS, s, LE_ERR_UNACCEPTABLE_CONN_PARAMS);
         }
@@ -887,7 +887,7 @@ static void le_signaling(le_slot_t *s, const uint8_t *p, uint16_t len) {
     case FLOSS_LE_SIG_CONN_PARAM_RSP:
         if (dlen >= 2 && s->param_state == PARAM_L2CAP_PENDING && id == s->sig_id) {
             uint16_t result = floss_get_le16(d);
-            FLOSS_LOGI(GAP, "le: parameter update %s", result == 0 ? "accepted" : "rejected");
+            FLOSS_LOGI(LE, "le: parameter update %s", result == 0 ? "accepted" : "rejected");
             s->param_state = PARAM_IDLE;
             /* Accepted: the central now runs the LL procedure and we get
              * Connection Update Complete. Rejected: report it now. */
@@ -945,7 +945,7 @@ void floss_le_init(void) {
     floss_att_init();
     floss_gatt_services_register_core();
     floss_hogp_reset();
-    floss_smp_init();
+    /* floss_smp_init() is called by floss_init() right after this. */
 }
 
 void floss_le_on_hci_ready(void) {
@@ -981,7 +981,7 @@ void floss_le_on_hci_event(uint8_t subevent, const uint8_t *params, uint8_t len)
         floss_smp_on_le_event(subevent, params, len);
         break;
     default:
-        FLOSS_LOGD(GAP, "le: subevent 0x%02x ignored", (unsigned)subevent);
+        FLOSS_LOGD(LE, "le: subevent 0x%02x ignored", (unsigned)subevent);
         break;
     }
 }
@@ -992,7 +992,7 @@ static void set_security_level(le_slot_t *s, uint8_t level) {
         return;
     }
     s->info.security_level = level;
-    FLOSS_LOGI(GAP, "le: link 0x%04x security level %u", (unsigned)s->info.handle, (unsigned)level);
+    FLOSS_LOGI(LE, "le: link 0x%04x security level %u", (unsigned)s->info.handle, (unsigned)level);
     emit_link_evt(FLOSS_LE_EVT_SECURITY, s, 0);
     floss_hogp_on_security(s->info.handle, level);
 }
@@ -1043,7 +1043,7 @@ void floss_le_on_pdu(uint16_t handle, const uint8_t *pdu, uint16_t len) {
         floss_smp_on_pdu(handle, payload, plen);
         break;
     default:
-        FLOSS_LOGD(GAP, "le: PDU on unknown CID 0x%04x dropped", (unsigned)cid);
+        FLOSS_LOGD(LE, "le: PDU on unknown CID 0x%04x dropped", (unsigned)cid);
         FLOSS_STAT_INC(rx_dropped);
         break;
     }
@@ -1057,7 +1057,7 @@ void floss_le_on_link_down(uint16_t handle, uint8_t reason) {
     le_slot_t *s = &s_le.links[idx];
     char str[18];
     floss_addr_to_str(&s->info.peer, str);
-    FLOSS_LOGI(GAP, "le: disconnected 0x%04x %s: %s", (unsigned)handle, str, floss_hci_status_str(reason));
+    FLOSS_LOGI(LE, "le: disconnected 0x%04x %s: %s", (unsigned)handle, str, floss_hci_status_str(reason));
     floss_timer_stop(&s->update_timer);
     floss_smp_on_link_down(handle);
     floss_att_on_link_down(handle);

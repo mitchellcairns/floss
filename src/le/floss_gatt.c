@@ -49,7 +49,7 @@ void floss_gatt_init(void) {
 uint16_t floss_gatt_register(const floss_gatt_attr_t *table, uint16_t count) {
     if (table == NULL || count == 0 || s_table_count >= FLOSS_GATT_MAX_TABLES ||
         (uint32_t)s_last_handle + count > 0xFFFFu) {
-        FLOSS_LOGE(GAP, "gatt: cannot register table (%u attrs, %u tables)", (unsigned)count,
+        FLOSS_LOGE(LE, "gatt: cannot register table (%u attrs, %u tables)", (unsigned)count,
                    (unsigned)s_table_count);
         return 0;
     }
@@ -58,7 +58,7 @@ uint16_t floss_gatt_register(const floss_gatt_attr_t *table, uint16_t count) {
     t->count = count;
     t->base = (uint16_t)(s_last_handle + 1);
     s_last_handle = (uint16_t)(s_last_handle + count);
-    FLOSS_LOGD(GAP, "gatt: table %u handles 0x%04x-0x%04x", (unsigned)(s_table_count - 1), (unsigned)t->base,
+    FLOSS_LOGD(LE, "gatt: table %u handles 0x%04x-0x%04x", (unsigned)(s_table_count - 1), (unsigned)t->base,
                (unsigned)s_last_handle);
     return t->base;
 }
@@ -266,7 +266,7 @@ static uint8_t write_cccd(uint16_t conn, uint16_t handle, const floss_gatt_attr_
         }
     }
     ((floss_gatt_cccd_t *)a->value)->v[idx] = v;
-    FLOSS_LOGD(GAP, "gatt: cccd 0x%04x = 0x%04x (link 0x%04x)", (unsigned)handle, (unsigned)v, (unsigned)conn);
+    FLOSS_LOGD(LE, "gatt: cccd 0x%04x = 0x%04x (link 0x%04x)", (unsigned)handle, (unsigned)v, (unsigned)conn);
     return 0;
 }
 

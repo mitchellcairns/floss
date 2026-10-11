@@ -344,7 +344,7 @@ static void update_connections(void) {
         if (sub && !hl->connected) {
             hl->connected = true;
             const floss_le_link_t *l = floss_le_link(handle);
-            FLOSS_LOGI(HID, "hogp: host 0x%04x subscribed, reports flowing", (unsigned)handle);
+            FLOSS_LOGI(LE, "hogp: host 0x%04x subscribed, reports flowing", (unsigned)handle);
             if (s_hogp.cb.on_connected) {
                 s_hogp.cb.on_connected(handle, &l->peer);
             }
@@ -446,7 +446,7 @@ static uint8_t protocol_write(uint16_t conn, uint16_t h, const floss_gatt_attr_t
     }
     if (s_hogp.protocol != data[0]) {
         s_hogp.protocol = data[0];
-        FLOSS_LOGI(HID, "hogp: protocol %s", data[0] ? "report" : "boot");
+        FLOSS_LOGI(LE, "hogp: protocol %s", data[0] ? "report" : "boot");
         if (s_hogp.cb.on_set_protocol) {
             s_hogp.cb.on_set_protocol(data[0]);
         }
@@ -463,7 +463,7 @@ static uint8_t control_write(uint16_t conn, uint16_t h, const floss_gatt_attr_t 
         return FLOSS_ATT_ERR_VALUE_NOT_ALLOWED;
     }
     s_hogp.suspended = data[0] == FLOSS_HOGP_CTRL_SUSPEND;
-    FLOSS_LOGI(HID, "hogp: host %s", s_hogp.suspended ? "suspended" : "resumed");
+    FLOSS_LOGI(LE, "hogp: host %s", s_hogp.suspended ? "suspended" : "resumed");
     if (s_hogp.cb.on_control) {
         s_hogp.cb.on_control(data[0]);
     }
@@ -602,7 +602,7 @@ floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_cal
     for (uint8_t k = 0; k < cfg->report_count; k++) {
         s_hogp.reports[k].value_handle = (uint16_t)(base + value_at[k]);
     }
-    FLOSS_LOGI(HID, "hogp: HID service at 0x%04x-0x%04x, %u reports", (unsigned)base, (unsigned)(base + n - 1),
+    FLOSS_LOGI(LE, "hogp: HID service at 0x%04x-0x%04x, %u reports", (unsigned)base, (unsigned)(base + n - 1),
                (unsigned)cfg->report_count);
     return FLOSS_OK;
 }
@@ -687,7 +687,7 @@ void floss_hogp_on_link_down(uint16_t handle, uint8_t reason) {
     }
     s_hogp.suspended = false;
     if (was) {
-        FLOSS_LOGI(HID, "hogp: host 0x%04x gone", (unsigned)handle);
+        FLOSS_LOGI(LE, "hogp: host 0x%04x gone", (unsigned)handle);
         if (s_hogp.cb.on_disconnected) {
             s_hogp.cb.on_disconnected(handle, reason);
         }

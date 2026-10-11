@@ -144,6 +144,9 @@ uint32_t floss_poll(void)
         floss_hci_poll();
         /* Profiles with ISR-fed mailboxes get a chance to send every poll. */
         floss_hid_poll();
+#if FLOSS_ENABLE_LE
+        floss_le_poll();
+#endif
     }
     next = floss_sched_run(floss_hal_time_us());
 
