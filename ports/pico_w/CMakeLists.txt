@@ -1,11 +1,12 @@
 # FLOSS - Free, Lightweight, Open Short-range Stack
 # SPDX-License-Identifier: Unlicense
 #
-# Raspberry Pi Pico W port (CYW43439): Classic HID gamepad and LE HID-over-GATT gamepad firmwares.
+# Raspberry Pi Pico W port (CYW43439): Classic HID gamepad and LE HID-over-GATT gamepad firmwares,
+# plus the pad <-> dongle link pair (floss_link_pad, floss_link_dongle).
 #
 #   cmake -G Ninja -S ports/pico_w -B build-pico
 #   cmake --build build-pico
-#   -> build-pico/floss_gamepad.uf2
+#   -> build-pico/floss_gamepad.uf2, floss_le_gamepad.uf2, floss_link_pad.uf2, floss_link_dongle.uf2
 #
 # The CYW43 driver is used directly (pico_cyw43_driver + async_context_poll),
 # NOT through pico_cyw43_arch, which would pull in another host stack.
@@ -88,7 +89,79 @@ function(floss_pico_firmware name app_dir app_src app_le)
     pico_add_extra_outputs(${name})
 endfunction()
 
+set(FLOSS_GAMEPAD_SOURCES
+    ${FLOSS_ROOT}/examples/gamepad/gamepad_app.c
+    ${FLOSS_ROOT}/examples/gamepad/gamepad_state.c)
 floss_pico_firmware(floss_gamepad
-    ${FLOSS_ROOT}/examples/gamepad ${FLOSS_ROOT}/examples/gamepad/gamepad_app.c 0)
+    ${FLOSS_ROOT}/examples/gamepad "${FLOSS_GAMEPAD_SOURCES}" 0)
 floss_pico_firmware(floss_le_gamepad
     ${FLOSS_ROOT}/examples/le_gamepad ${FLOSS_ROOT}/examples/le_gamepad/le_gamepad_app.c 1)
+
+# --- pad <-> dongle link firmwares (floss_link, sources in link/) ----------------
+#   floss_link_pad     the controller: gamepad state -> floss_link_set_input()
+#   floss_link_dongle  the USB receiver: floss_link -> USB HID gamepad + CDC console
+# Both share the board bring-up (link/link_board.c), the HAL, the CYW43
+# transport and the gamepad report format (examples/gamepad/gamepad_state.c).
+#
+# USB_DEVICE: the firmware runs its own TinyUSB device (tusb_config.h,
+# descriptors and a CDC stdio driver in link/) instead of the SDK's
+# pico_stdio_usb, which would bring its own descriptors.
+function(floss_pico_link_firmware name main_src)
+    cmake_parse_arguments(ARG "USB_DEVICE" "" "SOURCES" ${ARGN})
+    set(srcs
+        link/${main_src}
+        link/link_board.c
+        floss_hal_pico.c
+        ${FLOSS_ROOT}/transport/cyw43/floss_cyw43.c
+        ${FLOSS_ROOT}/examples/gamepad/gamepad_state.c
+        ${ARG_SOURCES}
+    )
+    add_executable(${name} ${srcs})
+    # Warnings only for our sources (SDK / TinyUSB sources compile into this target too).
+    set_source_files_properties(${srcs} PROPERTIES COMPILE_OPTIONS "${FLOSS_PICO_WARN}")
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${FLOSS_ROOT}/transport/cyw43
+        ${FLOSS_ROOT}/examples/gamepad
+    )
+    target_compile_definitions(${name} PRIVATE
+        CYW43_ENABLE_BLUETOOTH=1       # load the combined WLAN + radio firmware
+        CYW43_LWIP=0                   # no IP stack
+        FLOSS_PICO_SNOOP=$<BOOL:${FLOSS_PICO_SNOOP}>
+    )
+    target_link_libraries(${name}
+        floss
+        pico_stdlib
+        pico_cyw43_driver
+        cyw43_driver_picow
+        pico_async_context_poll
+        pico_unique_id
+        pico_bootrom
+        hardware_flash
+        hardware_sync
+        hardware_watchdog
+        pico_flash
+        pico_rand
+    )
+    if(ARG_USB_DEVICE)
+        # link/tusb_config.h configures TinyUSB. Only on this include path:
+        # the SDK's pico_stdio_usb (pad) must keep finding its own.
+        target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/link)
+        target_link_libraries(${name} tinyusb_device tinyusb_board)
+        pico_enable_stdio_usb(${name} 0)
+    else()
+        # Never stall the radio for long on a slow / unread USB console.
+        target_compile_definitions(${name} PRIVATE PICO_STDIO_USB_STDOUT_TIMEOUT_US=2000)
+        pico_enable_stdio_usb(${name} 1)
+    endif()
+    pico_enable_stdio_uart(${name} 0)
+    pico_add_extra_outputs(${name})
+endfunction()
+
+floss_pico_link_firmware(floss_link_pad main_pad.c)
+floss_pico_link_firmware(floss_link_dongle main_dongle.c USB_DEVICE SOURCES
+    link/usb_stdio.c
+    link/usb_descriptors.c
+    link/usb_gamepad.c
+    link/link_meter.c
+)
