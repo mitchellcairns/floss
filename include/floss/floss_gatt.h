@@ -322,6 +322,17 @@ uint16_t floss_gatt_find(uint16_t start, uint16_t end, uint16_t type16);
 
 /** CCCD value of the characteristic whose value handle is `value_handle` on link `conn` (0 if none). */
 uint16_t floss_gatt_cccd_get(uint16_t conn, uint16_t value_handle);
+
+/** Storage key range for per-bond CCCD values (+ LE bond index). */
+#define FLOSS_GATT_STORE_KEY_CCCD_BASE 0x0300
+
+/**
+ * Keep CCCD values of bonded peers across connections (required: a bonded
+ * client does not rewrite them on reconnection). Called by LE whenever the
+ * link's security changes. If the peer is bonded: a link that has CCCDs set
+ * saves them, a link with none set (fresh reconnection) restores them.
+ */
+void floss_gatt_cccd_sync(uint16_t conn);
 /** Handle of the CCCD belonging to `value_handle` (0 if none). */
 uint16_t floss_gatt_cccd_handle(uint16_t value_handle);
 

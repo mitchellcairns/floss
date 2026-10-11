@@ -179,7 +179,11 @@ static bool can_send(uint16_t handle) {
     }
     const floss_conn_t *c = floss_hci_conn_by_handle(handle);
     uint8_t max = s_hogp.cfg && s_hogp.cfg->max_inflight ? s_hogp.cfg->max_inflight : 1;
-    return c == NULL || c->inflight < max;
+    /* Controllers that report completions in batches (floss_chipset_t
+     * .completion_batch) would otherwise leave the link idle: the CYW43439
+     * holds back a lone completion for ~250 ms. */
+    uint16_t cap = (uint16_t)(max * floss_hci_completion_batch());
+    return c == NULL || c->inflight < cap;
 }
 
 static floss_err_t send_report(uint8_t i, uint16_t handle, hogp_report_t *r) {
@@ -298,6 +302,21 @@ static void service_all(bool tick) {
     }
 }
 
+/** Current pacing period: fixed, or the first connected link's interval. */
+static uint32_t period_us(void) {
+    if (s_hogp.interval_us != FLOSS_HOGP_INTERVAL_CONN) {
+        return s_hogp.interval_us;
+    }
+    for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+        uint16_t h = floss_le_link_handle_at(i);
+        const floss_le_link_t *l = h != 0xFFFF ? floss_le_link(h) : NULL;
+        if (l && l->interval) {
+            return (uint32_t)l->interval * 1250u;
+        }
+    }
+    return 7500u;
+}
+
 /** Drift-free pacing: deadlines advance by exactly one period. */
 static void tick_fired(floss_timer_t *t, void *arg) {
     if (s_hogp.cb.on_report_tick) {
@@ -307,10 +326,11 @@ static void tick_fired(floss_timer_t *t, void *arg) {
     if (s_hogp.interval_us == 0) {
         return;
     }
-    s_hogp.next_tick_us += s_hogp.interval_us;
+    uint32_t period = period_us();
+    s_hogp.next_tick_us += period;
     uint32_t now = floss_hal_time_us();
-    if (floss_time_diff(now, s_hogp.next_tick_us) > (int32_t)s_hogp.interval_us) {
-        s_hogp.next_tick_us = now + s_hogp.interval_us; /* fell far behind: resync, don't burst */
+    if (floss_time_diff(now, s_hogp.next_tick_us) > (int32_t)period) {
+        s_hogp.next_tick_us = now + period; /* fell far behind: resync, don't burst */
     }
     floss_timer_start_at(&s_hogp.tick, s_hogp.next_tick_us);
 }
@@ -328,7 +348,7 @@ static bool any_connected(void) {
 static void update_tick(void) {
     bool run = s_hogp.interval_us > 0 && any_connected();
     if (run && !floss_timer_active(&s_hogp.tick)) {
-        s_hogp.next_tick_us = floss_hal_time_us() + s_hogp.interval_us;
+        s_hogp.next_tick_us = floss_hal_time_us() + period_us();
         floss_timer_start_at(&s_hogp.tick, s_hogp.next_tick_us);
     } else if (!run) {
         floss_timer_stop(&s_hogp.tick);
@@ -479,7 +499,7 @@ void floss_hogp_config_defaults(floss_hogp_config_t *cfg) {
     cfg->normally_connectable = true;
     cfg->battery_service = true;
     cfg->battery_level = 100;
-    cfg->max_inflight = 1;
+    cfg->max_inflight = 2; /* an LE notification is acknowledged one connection event later */
 }
 
 floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_callbacks_t *cb) {

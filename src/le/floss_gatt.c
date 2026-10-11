@@ -242,6 +242,96 @@ int floss_gatt_read_value(uint16_t conn, uint16_t handle, uint16_t offset, uint8
     return n;
 }
 
+/* ------------------------------------------------------------------------ */
+/* CCCD persistence for bonded peers                                        */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Record (stored at FLOSS_GATT_STORE_KEY_CCCD_BASE + bond index):
+ *   [peer addr type][peer addr 6] then up to CCCD_MAX_SAVED x [handle 2][value 2]
+ * The identity prefix guards against a bond slot that was reused by another
+ * peer since the record was written.
+ */
+#define CCCD_MAX_SAVED 13 /* 7 + 13*4 = 59 bytes: fits the HAL's small-value limit */
+
+/** Bond slot index of the link's peer, or -1 if the peer is not bonded. */
+static int cccd_bond_slot(uint16_t conn, const floss_smp_bond_t **out) {
+    const floss_le_link_t *l = floss_le_link(conn);
+    if (l == NULL || l->security_level < 2) {
+        return -1;
+    }
+    const floss_smp_bond_t *b = floss_smp_resolve(l->peer_addr_type, &l->peer);
+    if (b == NULL) {
+        return -1;
+    }
+    for (uint8_t i = 0; i < floss_smp_bond_count(); i++) {
+        if (floss_smp_bond_at(i) == b) {
+            *out = b;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void cccd_save(uint16_t conn, int link_index, int slot, const floss_smp_bond_t *b) {
+    uint8_t rec[7 + CCCD_MAX_SAVED * 4];
+    uint16_t n = 7;
+    rec[0] = b->addr_type;
+    memcpy(&rec[1], b->addr.b, 6);
+    for (uint32_t h = 1; h <= s_last_handle && (size_t)n + 4u <= sizeof rec; h++) {
+        const floss_gatt_attr_t *a = floss_gatt_attr((uint16_t)h);
+        if (floss_gatt_type16(a) == FLOSS_GATT_UUID_CCCD && a->value) {
+            uint16_t v = ((const floss_gatt_cccd_t *)a->value)->v[link_index];
+            if (v) {
+                floss_put_le16(&rec[n], (uint16_t)h);
+                floss_put_le16(&rec[n + 2], v);
+                n = (uint16_t)(n + 4);
+            }
+        }
+    }
+    floss_hal_store_write((uint16_t)(FLOSS_GATT_STORE_KEY_CCCD_BASE + slot), rec, n);
+    FLOSS_LOGD(LE, "gatt: saved %u CCCD(s) for bond %d", (unsigned)((n - 7) / 4), slot);
+}
+
+static void cccd_restore(uint16_t conn, int link_index, int slot, const floss_smp_bond_t *b) {
+    uint8_t rec[7 + CCCD_MAX_SAVED * 4];
+    int n = floss_hal_store_read((uint16_t)(FLOSS_GATT_STORE_KEY_CCCD_BASE + slot), rec, sizeof rec);
+    if (n < 7 || rec[0] != b->addr_type || memcmp(&rec[1], b->addr.b, 6) != 0) {
+        return;
+    }
+    unsigned restored = 0;
+    for (int off = 7; off + 4 <= n; off += 4) {
+        uint16_t h = floss_get_le16(&rec[off]);
+        const floss_gatt_attr_t *a = floss_gatt_attr(h);
+        if (a && floss_gatt_type16(a) == FLOSS_GATT_UUID_CCCD && a->value) {
+            ((floss_gatt_cccd_t *)a->value)->v[link_index] =
+                (uint16_t)(floss_get_le16(&rec[off + 2]) & (FLOSS_GATT_CCCD_NOTIFY | FLOSS_GATT_CCCD_INDICATE));
+            restored++;
+        }
+    }
+    FLOSS_LOGI(LE, "gatt: restored %u CCCD(s) for bonded peer (link 0x%04x)", restored, (unsigned)conn);
+}
+
+void floss_gatt_cccd_sync(uint16_t conn) {
+    int idx = floss_le_link_index(conn);
+    const floss_smp_bond_t *b = NULL;
+    int slot = cccd_bond_slot(conn, &b);
+    if (idx < 0 || slot < 0) {
+        return;
+    }
+    bool any = false;
+    for (uint32_t h = 1; h <= s_last_handle && !any; h++) {
+        const floss_gatt_attr_t *a = floss_gatt_attr((uint16_t)h);
+        any = floss_gatt_type16(a) == FLOSS_GATT_UUID_CCCD && a->value &&
+              ((const floss_gatt_cccd_t *)a->value)->v[idx] != 0;
+    }
+    if (any) {
+        cccd_save(conn, idx, slot, b);
+    } else {
+        cccd_restore(conn, idx, slot, b);
+    }
+}
+
 /** CCCD write: per-link storage, exactly 2 bytes, offset 0. */
 static uint8_t write_cccd(uint16_t conn, uint16_t handle, const floss_gatt_attr_t *a, uint16_t offset,
                           const uint8_t *data, uint16_t len, uint8_t flags) {
@@ -267,6 +357,12 @@ static uint8_t write_cccd(uint16_t conn, uint16_t handle, const floss_gatt_attr_
     }
     ((floss_gatt_cccd_t *)a->value)->v[idx] = v;
     FLOSS_LOGD(LE, "gatt: cccd 0x%04x = 0x%04x (link 0x%04x)", (unsigned)handle, (unsigned)v, (unsigned)conn);
+    /* Bonded peer: remember it (a no-op until the link is encrypted with a bond). */
+    const floss_smp_bond_t *b = NULL;
+    int slot = cccd_bond_slot(conn, &b);
+    if (slot >= 0) {
+        cccd_save(conn, idx, slot, b);
+    }
     return 0;
 }
 

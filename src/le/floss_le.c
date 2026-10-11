@@ -1000,6 +1000,9 @@ static void set_security_level(le_slot_t *s, uint8_t level) {
     }
     s->info.security_level = level;
     FLOSS_LOGI(LE, "le: link 0x%04x security level %u", (unsigned)s->info.handle, (unsigned)level);
+    if (level >= 2) {
+        floss_gatt_cccd_sync(s->info.handle); /* bonded peer: restore or save subscriptions */
+    }
     emit_link_evt(FLOSS_LE_EVT_SECURITY, s, 0);
     floss_hogp_on_security(s->info.handle, level);
 }
@@ -1023,6 +1026,12 @@ void floss_le_on_security_changed(uint16_t handle, uint8_t level) {
     le_slot_t *s = slot_by_handle(handle);
     if (s && level >= 1 && level <= 4) {
         set_security_level(s, level);
+        /* Also when the level did not change: SMP calls this once the bond is
+         * stored, which is when the first pairing's CCCDs can be saved. */
+        if (level >= 2) {
+            floss_gatt_cccd_sync(handle);
+            floss_hogp_on_security(handle, level);
+        }
     }
 }
 

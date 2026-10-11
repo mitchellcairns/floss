@@ -85,13 +85,26 @@ typedef struct {
     uint8_t battery_level;           /**< initial level (default 100) */
 
     /* --- behaviour --------------------------------------------------------- */
-    /** 0 = notify on change as fast as the link allows; >0 = paced period in us. */
+    /**
+     * 0 = notify on change as fast as the link allows; >0 = paced period in us;
+     * FLOSS_HOGP_INTERVAL_CONN = one report per connection interval, following
+     * the link's current interval (recommended: LE delivers only at connection
+     * events, so one fresh report per event is the most consistent schedule).
+     */
     uint32_t report_interval_us;
     /** With pacing: also send when data did not change. */
     bool send_unchanged;
-    /** Max un-acknowledged ACL packets per link before reports wait (default 1). */
+    /**
+     * Max un-acknowledged ACL packets per link before reports wait (default 2,
+     * multiplied by the chipset's completion_batch). LE acknowledges a
+     * notification only at the next connection event, so 1 would skip every
+     * other event when pacing at the connection interval.
+     */
     uint8_t max_inflight;
 } floss_hogp_config_t;
+
+/** report_interval_us value: pace at the connection interval. */
+#define FLOSS_HOGP_INTERVAL_CONN 1u
 
 /** Fill a config with gamepad-friendly defaults (report map/reports still required). */
 void floss_hogp_config_defaults(floss_hogp_config_t *cfg);

@@ -17,10 +17,12 @@
  * Pairing is "just works": the HID characteristics require encryption, the
  * host pairs on first access and reconnects encrypted afterwards.
  *
- * Reports go out "on change" (report_interval_us = 0): every time the demo
- * publishes new state it is notified at the next connection event the
- * controller has room for, which with the default 7.5-15 ms interval is the
- * lowest latency LE offers.
+ * Reports are paced at the connection interval (FLOSS_HOGP_INTERVAL_CONN):
+ * LE only moves data at connection events, so one fresh report per event is
+ * both the most consistent schedule and the lowest latency LE offers.
+ * Measured against a Windows host, send-on-change instead delivered in
+ * bursts (two reports in one event, then one or two empty events), because
+ * the controller acknowledges notifications late; see docs/PERFORMANCE.md.
  */
 #include "le_gamepad_app.h"
 
@@ -32,7 +34,7 @@
 
 /* Demo cadence: new state every 4 ms (faster than any connection interval,
  * so the mailbox's latest-wins behaviour is exercised). */
-#define DEMO_PERIOD_US 4000u
+#define DEMO_PERIOD_US 1000u
 
 /* HID report descriptor: one gamepad application collection. */
 static const uint8_t k_report_map[] = {
@@ -163,7 +165,9 @@ static void build_report(uint32_t f, uint8_t out[LE_GAMEPAD_INPUT_LEN]) {
     out[2] = hat;
     floss_put_le16(&out[3], (uint16_t)triangle(f));
     floss_put_le16(&out[5], (uint16_t)triangle(f + 128u));
-    floss_put_le16(&out[7], (uint16_t)triangle(f * 2u));
+    /* Right stick X: millisecond counter, so a host can measure report
+     * interval / loss / latency jitter from the values (tools/hostprobe). */
+    floss_put_le16(&out[7], (uint16_t)((int32_t)((floss_hal_time_us() / 1000u) % 65535u) - 32767));
     floss_put_le16(&out[9], (uint16_t)triangle(f * 2u + 128u));
     out[11] = (uint8_t)f;
     out[12] = (uint8_t)(255u - (uint8_t)f);
@@ -188,7 +192,7 @@ floss_err_t le_gamepad_app_init(void) {
     s_cfg.vendor_id = 0x1209;     /* pid.codes open-source VID */
     s_cfg.product_id = 0x0001;    /* placeholder: request your own PID */
     s_cfg.version = 0x0100;
-    s_cfg.report_interval_us = 0; /* send on change */
+    s_cfg.report_interval_us = FLOSS_HOGP_INTERVAL_CONN; /* one fresh report per connection event */
 
     static const floss_hogp_callbacks_t cb = {
         .on_connected = on_connected,

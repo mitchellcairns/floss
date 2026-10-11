@@ -143,6 +143,36 @@ Measured with these defaults over 15 s:
 | Latency jitter | p50 **0.8 ms**, p90 **1.3 ms**, p99 8.5 ms |
 | Device report age (mailbox -> bus) | avg 0.95 ms, max 1.8 ms |
 
+## LE (HID over GATT)
+
+Same board with the `floss_le_gamepad` firmware, paired from Windows through
+FLOSS's SMP (LE Secure Connections, just works, controller-assisted P-256).
+Windows settles on a **15 ms connection interval** for this device, so the
+ceiling is 66.7 reports/s; LE moves data only at connection events.
+
+| Configuration | Delivered | Host inter-arrival p50 / p90 / p99 | Pattern |
+|---|---|---|---|
+| send on change, 1 in flight | 65/s | 15 / 29 / 44 ms | pairs then empty events |
+| paced per event, 1 in flight | 65/s | 21 / 29 / 44 ms | same: pacer stalls |
+| **paced per event, 2 in flight** | **66.7/s** | **15.00 / 15.09 / 29.8 ms** | one report every event |
+
+Why: a notification is acknowledged only at the *next* connection event, and
+the CYW43439 reports completions in pairs, so a completion arrives ~2
+intervals after sending. With one packet in flight the stack skips events.
+Defaults now: `max_inflight = 2` (x `completion_batch`) and the example paces
+with `FLOSS_HOGP_INTERVAL_CONN` (one fresh report per connection interval,
+following interval updates). Latency jitter: p50 1.1 ms, p90 1.9 ms.
+
+Bonded reconnection: hosts do not rewrite notification subscriptions
+(CCCDs) after reconnecting to a bonded device, so FLOSS stores them per bond
+(`floss_gatt_cccd_sync`, store keys from `FLOSS_GATT_STORE_KEY_CCCD_BASE`);
+after a device reboot reports resume without any host action.
+
+Classic vs LE for a controller: Classic polls every 1.25 ms (up to ~720
+reports/s measured, 800/s ceiling) while LE is bounded by the connection
+interval the host grants (15 ms here). For lowest latency use Classic; LE is
+for hosts or power budgets that require it.
+
 ## Reproduce
 
 ```powershell
