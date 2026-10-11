@@ -24,19 +24,19 @@ hardware verification.
 
 | Area | Feature | Status |
 |---|---|---|
-| **Classic** | HCI: command queue + flow control, ACL credits, fragmentation/reassembly, connection table | HW (bring-up), Unit |
-| | GAP: discoverable/connectable, Class of Device, EIR, Secure Simple Pairing, bonding, legacy PIN fallback, sniff/role/supervision/flush timeout | HW (inquiry/EIR), Unit |
-| | L2CAP basic mode: signaling, configuration, MTU, flush timeout, echo, info | Unit |
-| | SDP server: pre-serialised records, continuation, HID + Device ID builders | Unit |
-| | HID device: all HIDP transactions, latest-wins input mailbox, paced or on-change reports, reconnect, virtual cable | Unit |
-| **LE** | LE GAP: advertising, connections, data length, connection parameter updates (7.5 ms) | HW |
-| | ATT/GATT server: static attribute table, GAP/GATT/DIS/Battery services | HW (discovery, reads, CCCD) |
-| | SMP: legacy + Secure Connections (P-256 ECDH via controller, software AES-CMAC) | Unit (spec vectors) |
-| | HID-over-GATT | Impl |
+| **Classic** | HCI: command queue + flow control, ACL credits, fragmentation/reassembly, connection table | HW, Unit |
+| | GAP: discoverable/connectable, Class of Device, EIR, Secure Simple Pairing, bonding, legacy PIN fallback, sniff/role/QoS/supervision/flush timeout | HW (SSP P-256 bond with Windows), Unit |
+| | L2CAP basic mode: signaling, configuration, MTU, flush timeout, echo, info | HW, Unit |
+| | SDP server: pre-serialised records, continuation, HID + Device ID builders | HW (host reads HID + DID records), Unit |
+| | HID device: all HIDP transactions, latest-wins input mailbox, paced or on-change reports, auto-reconnect, virtual cable | HW (~720 reports/s, see PERFORMANCE.md), Unit |
+| **LE** | LE GAP: advertising, connections, data length, connection parameter updates | HW |
+| | ATT/GATT server: static attribute table, GAP/GATT/DIS/Battery services, CCCDs persisted per bond | HW |
+| | SMP: legacy + Secure Connections (P-256 ECDH via controller, software AES-CMAC) | HW (SC just works with Windows), Unit (spec vectors) |
+| | HID-over-GATT, paced per connection event | HW (one report per 15 ms event) |
 | **RFCOMM** | Multiplexer with credit-based flow control + serial port service | Unit |
 | **Transports** | H4 over any non-blocking byte stream (UART, USB-CDC, TCP, pipe) | Unit |
-| | CYW43 shared bus (Pico W / Pico 2 W) | HW |
-| | Simulated controller (tests, desktop demos) | Impl |
+| | CYW43 shared bus (Pico W / Pico 2 W), fast bulk path | HW |
+| | Simulated controller (tests, desktop demos) | Unit (6 suites) |
 | **Ports** | Raspberry Pi Pico W / Pico 2 W (`floss_gamepad`, `floss_le_gamepad`) | HW |
 | | POSIX / Windows desktop | Builds |
 
@@ -159,7 +159,7 @@ tuning hints), a binary **trace** ring cheap enough for hot paths, and
 | [DEBUGGING.md](docs/DEBUGGING.md) | tools, stats reference, troubleshooting recipes |
 | [HID_GAMEPAD.md](docs/HID_GAMEPAD.md) | building a gamepad: descriptors, pacing, latency trade-offs |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | measured report timing on hardware, what each latency knob does, defaults |
-| [LE.md](docs/LE.md), [RFCOMM.md](docs/RFCOMM.md) | in-progress designs |
+| [LE.md](docs/LE.md), [RFCOMM.md](docs/RFCOMM.md) | LE and RFCOMM designs |
 | [LEGAL.md](docs/LEGAL.md) | licensing, naming, clean-room policy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | style, tests, commits |
 
