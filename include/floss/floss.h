@@ -48,6 +48,9 @@
 #include "floss_l2cap.h"
 #include "floss_sdp.h"
 #include "floss_hid.h"
+#if FLOSS_ENABLE_RFCOMM
+#include "floss_rfcomm.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

@@ -28,12 +28,11 @@
 
 #if FLOSS_ENABLE_RFCOMM
 
-/* Logging: there is no RFCOMM module id yet, so RFCOMM logs under L2CAP with
- * an "rfcomm:" prefix (the format string must be a literal). */
-#define RFC_LOGE(...) FLOSS_LOGE(L2CAP, "rfcomm: " __VA_ARGS__)
-#define RFC_LOGW(...) FLOSS_LOGW(L2CAP, "rfcomm: " __VA_ARGS__)
-#define RFC_LOGI(...) FLOSS_LOGI(L2CAP, "rfcomm: " __VA_ARGS__)
-#define RFC_LOGD(...) FLOSS_LOGD(L2CAP, "rfcomm: " __VA_ARGS__)
+/* Logging: RFCOMM has its own module id (FLOSS_MOD_RFCOMM, tag "RFC"). */
+#define RFC_LOGE(...) FLOSS_LOGE(RFCOMM, __VA_ARGS__)
+#define RFC_LOGW(...) FLOSS_LOGW(RFCOMM, __VA_ARGS__)
+#define RFC_LOGI(...) FLOSS_LOGI(RFCOMM, __VA_ARGS__)
+#define RFC_LOGD(...) FLOSS_LOGD(RFCOMM, __VA_ARGS__)
 
 /* ------------------------------------------------------------------------ */
 /* Frame constants                                                          */
