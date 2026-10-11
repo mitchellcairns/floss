@@ -171,21 +171,28 @@ TEST(de_header_parse) {
     ASSERT_EQ(de_type(type), DE_TEXT);
     ASSERT_EQ(len, 3);
 
-    const uint8_t seq8[] = {0x35, 0x05};
+    const uint8_t seq8[] = {0x35, 0x05, 0, 0, 0, 0, 0}; /* header + payload: the parser checks the payload fits */
     ASSERT_EQ(floss_de_header(seq8, sizeof seq8, &type, &len), 2);
     ASSERT_EQ(de_type(type), DE_SEQ);
     ASSERT_EQ(len, 5);
 
-    const uint8_t seq16[] = {0x36, 0x01, 0x02};
-    ASSERT_EQ(floss_de_header(seq16, sizeof seq16, &type, &len), 3);
+    /* The parser also checks that the payload fits in avail, so the longer
+     * elements are parsed from a zero-padded buffer. */
+    static uint8_t pad[0x200];
+    memset(pad, 0, sizeof pad);
+    pad[0] = 0x36; pad[1] = 0x01; pad[2] = 0x02;
+    ASSERT_EQ(floss_de_header(pad, sizeof pad, &type, &len), 3);
     ASSERT_EQ(len, 0x0102);
+    const uint8_t *seq16 = pad;
 
-    const uint8_t seq32[] = {0x37, 0x00, 0x00, 0x01, 0x00};
-    ASSERT_EQ(floss_de_header(seq32, sizeof seq32, &type, &len), 5);
+    static uint8_t pad32[0x200];
+    memset(pad32, 0, sizeof pad32);
+    pad32[0] = 0x37; pad32[3] = 0x01;
+    ASSERT_EQ(floss_de_header(pad32, sizeof pad32, &type, &len), 5);
     ASSERT_EQ(len, 0x100);
 
-    const uint8_t uuid128[] = {0x1C};
-    ASSERT_EQ(floss_de_header(uuid128, 1, &type, &len), 1);
+    const uint8_t uuid128[17] = {0x1C};
+    ASSERT_EQ(floss_de_header(uuid128, sizeof uuid128, &type, &len), 1);
     ASSERT_EQ(de_type(type), DE_UUID);
     ASSERT_EQ(len, 16);
 

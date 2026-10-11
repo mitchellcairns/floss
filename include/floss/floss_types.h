@@ -61,7 +61,7 @@ typedef struct {
 
 /** Format as "AA:BB:CC:DD:EE:FF" (MSB first). out must hold 18 bytes. */
 void floss_addr_to_str(const floss_addr_t *addr, char out[18]);
-/** Parse "AA:BB:CC:DD:EE:FF". Returns false on malformed input. */
+/** Parse "AA:BB:CC:DD:EE:FF" ('-' separators also accepted). Returns false on malformed input. */
 bool floss_addr_from_str(const char *str, floss_addr_t *out);
 
 static inline bool floss_addr_eq(const floss_addr_t *a, const floss_addr_t *b) {

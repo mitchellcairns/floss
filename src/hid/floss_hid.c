@@ -315,7 +315,8 @@ static bool hid_descriptor_uses_ids(const uint8_t *d, uint16_t len) {
 }
 
 static uint32_t hid_cod_for_subclass(uint8_t subclass) {
-    uint32_t cod = FLOSS_COD_MAJOR_PERIPHERAL;
+    /* Limited-discoverable service bit, as commercial controllers advertise (see FLOSS_COD_GAMEPAD). */
+    uint32_t cod = FLOSS_COD_SERVICE_LIMITED_DISCOVERABLE | FLOSS_COD_MAJOR_PERIPHERAL;
     switch (subclass) {
     case FLOSS_HID_SUBCLASS_GAMEPAD:  cod |= FLOSS_COD_MINOR_GAMEPAD; break;
     case FLOSS_HID_SUBCLASS_JOYSTICK: cod |= FLOSS_COD_MINOR_JOYSTICK; break;

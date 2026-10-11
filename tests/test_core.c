@@ -318,27 +318,28 @@ TEST(timer_start_at_absolute) {
 /* ------------------------------------------------------------------------ */
 
 TEST(hist_buckets) {
+    /* Layout (floss_debug.h): [0] < 8 us, [i] = [4<<i, 8<<i) us, last = overflow. */
     floss_hist_t h;
     memset(&h, 0, sizeof h);
-    floss_hist_add(&h, 50);     /* < 128           -> 0 */
-    floss_hist_add(&h, 127);    /*                 -> 0 */
-    floss_hist_add(&h, 128);    /* [128, 256)      -> 1 */
-    floss_hist_add(&h, 255);    /*                 -> 1 */
-    floss_hist_add(&h, 256);    /* [256, 512)      -> 2 */
-    floss_hist_add(&h, 1000);   /* [512, 1024)     -> 3 */
-    floss_hist_add(&h, 131071); /* [65536, 131072) -> 10 */
-    floss_hist_add(&h, 131072); /* overflow        -> 11 */
+    floss_hist_add(&h, 5);      /* < 8             -> 0 */
+    floss_hist_add(&h, 7);      /*                 -> 0 */
+    floss_hist_add(&h, 8);      /* [8, 16)         -> 1 */
+    floss_hist_add(&h, 15);     /*                 -> 1 */
+    floss_hist_add(&h, 16);     /* [16, 32)        -> 2 */
+    floss_hist_add(&h, 1000);   /* [512, 1024)     -> 7 */
+    floss_hist_add(&h, 131071); /* [65536, 131072) -> 14 */
+    floss_hist_add(&h, 131072); /* overflow        -> 15 */
     floss_hist_add(&h, 5000000);
 
     ASSERT_EQ(h.count, 9);
-    ASSERT_EQ(h.min_us, 50);
+    ASSERT_EQ(h.min_us, 5);
     ASSERT_EQ(h.max_us, 5000000);
-    ASSERT_EQ(h.sum_us, 50ull + 127 + 128 + 255 + 256 + 1000 + 131071 + 131072 + 5000000);
+    ASSERT_EQ(h.sum_us, 5ull + 7 + 8 + 15 + 16 + 1000 + 131071 + 131072 + 5000000);
     ASSERT_EQ(h.bucket[0], 2);
     ASSERT_EQ(h.bucket[1], 2);
     ASSERT_EQ(h.bucket[2], 1);
-    ASSERT_EQ(h.bucket[3], 1);
-    ASSERT_EQ(h.bucket[10], 1);
+    ASSERT_EQ(h.bucket[7], 1);
+    ASSERT_EQ(h.bucket[14], 1);
     ASSERT_EQ(h.bucket[FLOSS_HIST_BUCKETS - 1], 2);
 }
 
@@ -383,9 +384,10 @@ TEST(trace_ring_wraps_and_freezes) {
         ASSERT_EQ(out[i].t_us, 1000 + out[i].arg);
     }
 
-    /* Partial read returns the oldest entries. */
+    /* Partial read returns the newest entries (what led up to "now"), oldest first. */
     ASSERT_EQ(floss_trace_read(out, 4), 4);
-    ASSERT_EQ(out[0].arg, total - FLOSS_TRACE_ENTRIES);
+    ASSERT_EQ(out[0].arg, total - 4);
+    ASSERT_EQ(out[3].arg, total - 1);
 
     floss_trace_freeze(true);
     floss_trace(FLOSS_TR_USER + 1, 0xDEAD);
@@ -431,7 +433,9 @@ TEST(addr_rejects_malformed) {
     ASSERT_FALSE(floss_addr_from_str("12:34:56:78:9A:BG", &a));
     ASSERT_FALSE(floss_addr_from_str("123:4:56:78:9A:BC", &a));
     ASSERT_FALSE(floss_addr_from_str("12:34:56:78:9A:BC:DE", &a));
-    ASSERT_FALSE(floss_addr_from_str("12-34-56-78-9A-BC", &a));
+    ASSERT_FALSE(floss_addr_from_str("12:34:56:78:9A BC", &a));
+    /* '-' separators are accepted (documented in floss_types.h). */
+    ASSERT_TRUE(floss_addr_from_str("12-34-56-78-9A-BC", &a));
 }
 
 TEST(err_str_all_codes) {

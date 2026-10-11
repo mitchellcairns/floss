@@ -301,11 +301,12 @@ static sim_pkt_t *q_push(uint8_t type, uint16_t len) {
  * A real controller silently drops events the host did not enable. Codes
  * 0x01..0x3F map to Set Event Mask bit (code - 1), 0x40+ to page 2 bit
  * (code - 0x40), and LE subevents additionally need LE Set Event Mask bit
- * (subevent - 1). Command Complete/Status are never masked in practice.
+ * (subevent - 1). Command Complete, Command Status and Number Of Completed
+ * Packets cannot be masked: their mask bits (13, 14, 18) are reserved.
  */
 static bool evt_enabled(uint8_t code, const uint8_t *params, uint8_t len) {
     if (!sim.cfg.enforce_event_mask || code == 0 || code == FLOSS_EVT_COMMAND_COMPLETE ||
-        code == FLOSS_EVT_COMMAND_STATUS) {
+        code == FLOSS_EVT_COMMAND_STATUS || code == FLOSS_EVT_NUMBER_OF_COMPLETED_PACKETS) {
         return true;
     }
     bool on;

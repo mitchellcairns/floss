@@ -249,7 +249,7 @@ void floss_trace(uint16_t id, uint32_t arg);
 void floss_trace_freeze(bool frozen);
 /** Print the ring oldest-first with relative timestamps. */
 void floss_trace_dump(void);
-/** Raw access: copies up to max entries oldest-first, returns count. */
+/** Raw access: copies the NEWEST min(max, recorded) entries, in oldest-first order; returns count. */
 uint16_t floss_trace_read(floss_trace_entry_t *out, uint16_t max);
 
 /* ------------------------------------------------------------------------ */
