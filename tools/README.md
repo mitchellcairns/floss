@@ -1,14 +1,13 @@
 # FLOSS tools
 
-Host-side helpers for debugging FLOSS. They are plain Python 3 scripts and
-need nothing beyond the standard library, except `floss_monitor.py`, which
-needs [pyserial](https://pypi.org/project/pyserial/)
-(`python -m pip install pyserial`).
+Host-side helpers for debugging and measuring FLOSS.
 
-| Script             | What it does                                                        |
-|--------------------|---------------------------------------------------------------------|
-| `floss_snoop.py`   | Converts `SNOOP` log lines into a `.btsnoop` file for Wireshark      |
-| `floss_monitor.py` | Serial console: shows and saves the log, captures HCI live, sends keys |
+| Tool | Runs on | What it does |
+|---|---|---|
+| `floss_snoop.py` | Python 3 (standard library) | Converts `SNOOP` log lines into a `.btsnoop` file for Wireshark |
+| `floss_monitor.py` | Python 3 + [pyserial](https://pypi.org/project/pyserial/) (`python -m pip install pyserial`) | Serial console: shows and saves the log, captures HCI live, sends keys |
+| `pico_flash.ps1` | Windows PowerShell | Flashes a running Pico W via the 1200-baud bootloader request, then shows its console |
+| `hostprobe/` | Windows 10+, .NET SDK | `floss_hostprobe`: pair/scan helpers and host-side report timing analysis; `experiment.ps1` automates latency experiments |
 
 ## Getting HCI packets into the log
 
@@ -90,3 +89,60 @@ Other options: `-b/--baud` (ignored by USB CDC ports) and `--rtscts`.
   with times relative to the first entry and the gap to the previous one.
   Call `floss_trace_freeze(true)` as soon as you detect the problem, so the
   history that led up to it is not overwritten.
+
+## pico_flash.ps1: flash without BOOTSEL (Windows)
+
+```powershell
+powershell -File tools/pico_flash.ps1 -Uf2 build-pico/floss_gamepad.uf2 [-ReadMs 8000]
+```
+
+1. Finds the board's USB serial port (USB vendor ID 0x2E8A) and opens it at
+   1200 baud: the Pico SDK's USB stdio reboots into the ROM bootloader.
+2. Waits for the `RPI-RP2` drive and copies the `.uf2` (flash + restart).
+3. Waits for the serial port to come back and prints the console for
+   `-ReadMs` ms (0 = skip).
+
+Needed because picotool cannot reset a running board on a stock Windows
+install (no WinUSB driver on the reset interface). If no drive appears, hold
+BOOTSEL while plugging in and retry. The script only recognises the
+`RPI-RP2` label (Pico W), not the Pico 2 W's `RP2350`.
+
+## hostprobe/: measure report timing from the host (Windows)
+
+Build once (net9.0 Windows target, see `floss_hostprobe.csproj`):
+
+```powershell
+cd tools/hostprobe; dotnet build -c Release -o out; cd ../..
+```
+
+`tools/hostprobe/out/floss_hostprobe.exe` commands:
+
+| Command | Does |
+|---|---|
+| `scan <name> [--le]` | Find an unpaired device whose name contains `<name>` (default "FLOSS") |
+| `pair <name> [--le]` | Pair it, auto-accepting the confirmation |
+| `unpair <name> [--le]` / `paired <name> [--le]` | Forget / find a paired device |
+| `conns` | List paired Classic and LE devices and whether they are connected |
+| `pads <seconds>` | Read the first game controller through the OS game-input API and analyse report timing |
+
+`pads` needs the example firmware's demo mode: one axis carries a
+millisecond counter, which the probe finds automatically. It prints
+distinct reports/s, delivered vs generated (coalesced %), host inter-arrival,
+device milliseconds between delivered reports, latency jitter (host time
+minus device time with clock drift removed, 0 = fastest delivery seen) as
+min/p50/p90/p99/max, and the structure of gaps longer than 3 ms.
+
+`experiment.ps1` runs a series of configurations against the Classic
+firmware:
+
+```powershell
+powershell -File tools/hostprobe/experiment.ps1 -Flash -Configs m,4,P -Seconds 10
+```
+
+For each comma-separated config it types those console tuning keys (see
+[ports/pico_w/README.md](../ports/pico_w/README.md#serial-console)), resets the
+device stats (`r`), runs `floss_hostprobe pads`, then dumps the device stats
+(`s`) and prints the relevant lines next to the host view. `-Flash` first
+flashes `build-pico/floss_gamepad.uf2` with `pico_flash.ps1` and waits for
+the bonded host to reconnect. Results and method:
+[docs/PERFORMANCE.md](../docs/PERFORMANCE.md).

@@ -10,7 +10,7 @@ that answers your question.
 | **Logs** | `FLOSS_LOGE/W/I/D/T(MOD, ...)`, `FLOSS_HEXDUMP` | vsnprintf + HAL write per line | Following control flow: bring-up, pairing, channel setup. Not for per-packet timing. |
 | **Snoop** | `floss_snoop_set_hook()`, `floss_snoop_log_hook` | One callback per HCI packet | Protocol questions: "what did the host actually send?" Wireshark decodes everything. |
 | **Stats** | `floss_stats()`, `floss_stats_dump()`, `floss_stats_reset()` | ~O(1) per event, always on | "Why is latency / throughput inconsistent?" Start here for performance. |
-| **Trace** | `FLOSS_TRACE(id, arg)`, `floss_trace_freeze()`, `floss_trace_dump()`, `floss_trace_read()` | ~10 instructions | Exact ordering and timing in hot paths, after the fact. Freeze when the bug happens, then dump. |
+| **Trace** | `FLOSS_TRACE(id, arg)`, `floss_trace_freeze()`, `floss_trace_dump()`, `floss_trace_read()` | ~10 instructions | Exact ordering and timing in hot paths, after the fact. Freeze when the bug happens, then dump. `floss_trace_read(out, max)` copies the **newest** `max` entries, oldest first. |
 | **Debug pins** | `FLOSS_DBG_PIN(n, level)` (`FLOSS_ENABLE_DEBUG_PINS=1`) | One GPIO write | End-to-end latency with a logic analyser; correlating with the radio or the host. |
 
 ## 2. Logs
@@ -32,8 +32,9 @@ Line format: `[sssss.uuuuuu] MOD L message`.
 | `FLOSS_MOD_SDP` | requests and responses |
 | `FLOSS_MOD_HID` | HIDP transactions, reconnect, mailbox |
 | `FLOSS_MOD_APP` | your code |
-
-(LE, SMP and RFCOMM get their own modules when they land.)
+| `FLOSS_MOD_LE` | LE GAP, ATT, GATT (incl. CCCD save/restore), HID over GATT |
+| `FLOSS_MOD_SMP` | LE pairing, keys, bonds |
+| `FLOSS_MOD_RFCOMM` | multiplexer, DLCs, serial port |
 
 Typical session: build with `FLOSS_LOG_LEVEL=FLOSS_LOG_DEBUG`, run at INFO,
 raise one module to DEBUG while investigating it.
@@ -54,8 +55,9 @@ raise one module to DEBUG while investigating it.
      lines and writes the SNOOP lines into a capture as they arrive.
    Run either with `--help` for the exact options.
 3. Open the `.btsnoop` file in Wireshark. Useful display filters:
-   `bthci_evt`, `bthci_acl`, `btl2cap`, `btsdp`, `bthid`,
-   `bthci_evt.code == 0x13` (Number Of Completed Packets).
+   `bthci_evt`, `bthci_acl`, `btl2cap`, `btsdp`, `bthid`, `btatt`,
+   `btsmp`, `btrfcomm`, `bthci_evt.code == 0x13` (Number Of Completed
+   Packets).
 
 The log hook is convenient but costs a log line per packet. For heavy traffic
 write your own `floss_snoop_fn` that copies into a RAM ring and drains it from
@@ -96,7 +98,9 @@ that percentile (an upper bound, within 2x), clamped to the observed min/max.
 | `buf_alloc_failures` | Pool exhausted | 0 | Raise `FLOSS_BUF_COUNT`; check `floss_buf_low_watermark()` |
 | `rx_dropped` | Malformed or no room for reassembly | 0 | Peer sends PDUs larger than `FLOSS_BUF_SIZE` / MTU, or pool exhausted |
 | `cmd_latency` | Command sent -> Command Complete/Status | p99 < ~2 ms | Slow transport or busy controller (WLAN coexistence on combo chips) |
-| `acl_ack_latency` | ACL handed to transport -> Number Of Completed Packets | Active mode: ~1-3 ms. Sniff: ~ sniff interval | Retransmissions, interference, sniff, host scheduling. Long tail = air trouble |
+| `acl_ack_latency` | ACL handed to transport -> Number Of Completed Packets | Active mode: ~1-3 ms. Sniff: ~ sniff interval | Retransmissions, interference, sniff, host scheduling. Long tail = air trouble. Controllers that batch completions (`completion_batch`, CYW43439) add a few ms |
+| `transport_send_time` | Duration of one transport `send()` (bus cost per TX packet; the loop is blocked meanwhile) | Max < 500 us (the dump prints a hint above) | Slow bus clock, driver waits |
+| `transport_poll_time` | Duration of a transport `poll()` that delivered packets. Includes **processing** the delivered packets, since delivery runs the stack's RX path: e.g. a bond written to flash during pairing lands here | Pico W fast path: ~270 us avg, ~420 us max (outside pairing) | Slow bus reads, too many packets per poll, or slow work in RX handlers (flash writes, logs) |
 
 ### Link
 
@@ -118,6 +122,8 @@ that percentile (an upper bound, within 2x), clamped to the observed min/max.
 | `hid_output_reports` | Output reports received (rumble, LEDs). |
 | `hid_report_age` | `floss_hid_set_input()` -> transport. Your share of end-to-end latency inside the device. With pacing and `on_report_tick`, should be tiny. |
 | `hid_send_interval` | Spacing between consecutive reports. Should cluster tightly at `report_interval_us`. Bimodal = bursts. |
+
+HID over GATT (`floss_hogp.h`) feeds the same `hid_*` fields.
 
 ### Run loop
 
@@ -162,7 +168,9 @@ Work down this list; each item names the stat that confirms it.
 |---|---|---|
 | Controller credits exhausted | `acl_credit_stalls`, `floss_hci_acl_credits()`, `acl_total` | Fewer/smaller packets; let the mailbox coalesce instead of queuing |
 | Retransmissions / interference | `acl_ack_latency` long tail, RSSI (`floss_gap_read_rssi`) | Antenna, distance, 2.4 GHz congestion (WLAN, other links); shorter flush timeout |
-| Flush timeout too long / infinite | Old reports delivered late after a fade | Set `flush_timeout_ms` (e.g. 2-3x report interval); reports become FLUSHABLE drops |
+| Controller queue too deep | Latency jitter grows with `max_inflight` (or 0 = no cap) | Keep `max_inflight` at 1-2; set the chipset's `completion_batch` if completions arrive in batches |
+| Page scan while connected | Periodic gaps; `FLOSS_HID_CONNECTABLE_WHILE_CONNECTED=1` or `P` on the Pico console | Leave page scan off while connected (default) |
+| Flush timeout too long / infinite | Old reports delivered late after a fade | Set `flush_timeout_ms` (e.g. 2-3x report interval); reports become FLUSHABLE drops. Not with the CYW43439: short flush timeouts caused multi-second stalls (PERFORMANCE.md, finding 7) |
 | Flush timeout too short | Missing reports at the host | Increase it; 0 = reliable |
 | Report doesn't fit a 1-slot packet | Payload size vs table below | Shrink the report or accept multi-slot packets |
 | Poll starvation | `poll_gap`, `timer_lateness` p99 | Call `floss_poll()` more often; move heavy app work off the stack context |
@@ -235,7 +243,57 @@ host may not allow) or more air time per report.
 - `cmd_latency` max close to `FLOSS_HCI_CMD_TIMEOUT_US`: the controller is
   overloaded (combo chip with busy WLAN).
 
-## 6. Measuring end-to-end latency with debug pins
+## 6. Pico W console and host-side measurement
+
+The Pico W firmwares (`ports/pico_w/main.c`) expose the toolbox on the USB
+serial console; the full key list is in
+[ports/pico_w/README.md](../ports/pico_w/README.md#serial-console).
+
+### Status and loop profiler
+
+While a Classic HID host is connected, every 5 s:
+
+```
+status: connected, <n> reports/s, ack p50 <us> us p99 <us> us, deferred <n>, coalesced <n>
+loop max us: cyw43 <us> floss <us> bootsel <us> app <us> led <us> console <us>
+```
+
+The second line is the worst-case time spent in each main-loop section
+since the previous status line (`cyw43` = `async_context_poll`, `floss` =
+`floss_poll()`, `bootsel` = BOOTSEL sampling, `app` = the app task, `led`,
+`console`). When `poll_gap` or `timer_lateness` is large, it names the
+section responsible. Both lines are printed only by the Classic firmware's
+status check (`floss_hid_connected()`).
+
+### Live latency tuning (Classic firmware)
+
+Keys apply immediately, without reflashing; each prints the current
+settings (`tune: inflight .. qos .. us flush .. ms interval .. us`).
+
+| Key | Effect |
+|---|---|
+| `0`-`8` | `floss_hid_set_max_inflight(n)`; 0 = no cap. The effective cap is n x `completion_batch` (x2 on CYW43). |
+| `Q` | Cycle the QoS poll latency 625 / 1250 / 2500 / 5000 us and send `floss_gap_qos_setup()` on the current link. |
+| `F` | Cycle the flush timeout 0 / 2 / 3 / 5 / 10 / 20 ms via `floss_gap_set_flush_timeout()` on the current link. |
+| `I` | Cycle the report interval 1000 / 1250 / 2000 / 4000 / 8000 / 0 (send on change) us via `floss_hid_set_report_interval()`. |
+| `P` | Toggle page scan (connectable) while connected: `floss_gap_set_scan(false, on)`. Starts off. |
+| `m` | Show the current settings. |
+
+Start values come from `GAMEPAD_MAX_INFLIGHT`, `GAMEPAD_QOS_LATENCY_US`,
+`GAMEPAD_FLUSH_TIMEOUT_MS` and `GAMEPAD_REPORT_INTERVAL_US`
+(`examples/gamepad/gamepad_app.h`). `Q` and `F` need a connected host.
+
+### Host side: `tools/hostprobe`
+
+`floss_hostprobe` (Windows, .NET) reads the gamepad through the OS
+game-input API and decodes the demo's millisecond-counter axis, giving
+delivered reports/s, coalesced %, host inter-arrival and latency jitter.
+`tools/hostprobe/experiment.ps1` sends tuning keys, resets device stats,
+measures, and prints the device's stats next to the host view;
+`-Flash` reflashes first via `tools/pico_flash.ps1`. Method and results:
+[PERFORMANCE.md](PERFORMANCE.md); usage: [tools/README.md](../tools/README.md).
+
+## 7. Measuring end-to-end latency with debug pins
 
 Build with `-DFLOSS_ENABLE_DEBUG_PINS=1` and map the logical pins in
 `floss_hal_debug_pin()`.

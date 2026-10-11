@@ -31,8 +31,8 @@ confirm you have the right to do so.
 ## 3. Code style
 
 - **C11**, no compiler extensions in core code (`C_EXTENSIONS OFF`). Must build
-  warning-free with `-Wall -Wextra -Wshadow -Wstrict-prototypes` (CI uses
-  `-Werror`).
+  warning-free with `-Wall -Wextra -Wshadow -Wstrict-prototypes` (the desktop
+  build adds `-Werror` unless `-DFLOSS_WERROR=OFF`).
 - 4-space indentation, no tabs, LF line endings (`.gitattributes` enforces).
   Opening brace on the same line. Lines up to ~110 columns.
 - **No heap** (`malloc`/`free`), no recursion, no VLAs. Size everything with
@@ -66,11 +66,29 @@ ctest --test-dir build --output-on-failure
 ```
 
 CMake options: `FLOSS_BUILD_TESTS` (ON), `FLOSS_BUILD_POSIX` (ON),
-`FLOSS_WERROR` (ON). Tests run against the simulated controller in
-`transport/sim`; new protocol features need a test there (happy path plus at
-least one malformed-input case). Hardware changes: also build `ports/pico_w`
-and attach a short `floss_stats_dump()` or snoop excerpt to the PR if timing
-is involved.
+`FLOSS_WERROR` (ON).
+
+| Piece | Where |
+|---|---|
+| Framework (`TEST()`, `TEST_CASE()`, `ASSERT_*`, `FLOSS_TEST_MAIN`) | `tests/floss_test.h/.c` |
+| Deterministic HAL (test-owned clock, storage, randomness) | `tests/test_hal.c/.h` |
+| Integration fixtures (`floss_tc_*`: sim init, stack start, host connect/pair, HID open) | `tests/test_common.c/.h` |
+| Suites | `tests/test_*.c`, one executable each, registered with `floss_add_test()` in `tests/CMakeLists.txt` |
+
+```sh
+FLOSS_TEST_QUIET=1 ctest --test-dir build      # silence stack logs
+ctest --test-dir build -LE perf                # skip the benchmark suite
+build/tests/test_hid_flow reconnect            # run tests whose name contains "reconnect"
+```
+
+Tests run against the simulated controller in `transport/sim`; new protocol
+features need a test there (happy path plus at least one malformed-input
+case). Hardware changes: also build `ports/pico_w` and attach a short
+`floss_stats_dump()` or snoop excerpt to the PR if timing is involved (see
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the measurement method).
+
+Public API changes update the matching doc in `docs/` in the same commit;
+every name a doc mentions must exist in the code.
 
 ## 5. Commit messages
 

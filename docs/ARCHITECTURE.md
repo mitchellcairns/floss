@@ -9,7 +9,7 @@ in `include/floss/*.h` or `src/floss_internal.h`.
 
 ```
  +-------------------------------------------------------------------+
- |  APP  (examples/gamepad, your product)                            |
+ |  APP  (examples/gamepad, le_gamepad, serial_echo, your product)   |
  +-------------------------------------------------------------------+
      | floss_hid_*  floss_gap_*                      ^ callbacks
      v                                               |
@@ -39,9 +39,27 @@ in `include/floss/*.h` or `src/floss_internal.h`.
  +-------------------------------------------------------------------+
 
  CORE (src/core): buffer pool, timers, logs/trace/stats - used by all.
- LE   (src/le):   LE GAP, ATT/GATT, SMP  - sits beside L2CAP on LE links.
- RFCOMM (src/rfcomm): on top of L2CAP PSM 0x0003.
+ LE   (src/le):   LE GAP, ATT/GATT, SMP, HID over GATT - beside L2CAP on LE links.
+ RFCOMM (src/rfcomm): multiplexer + serial port, on top of L2CAP PSM 0x0003.
 ```
+
+### Source map
+
+| Directory | Files | Contents |
+|---|---|---|
+| `src/` | `floss.c`, `floss_internal.h` | `floss_init()` / `floss_start()` / `floss_poll()`; upward hooks |
+| `src/core/` | `floss_buf.c`, `floss_sched.c`, `floss_debug.c`, `floss_util.c` | Buffer pool, timers, logs/snoop/stats/trace, helpers |
+| `src/hci/` | `floss_hci.c`, `floss_hci_acl.c`, `floss_hci_bringup.c`, `floss_hci_status.c`, `floss_hci_priv.h` | Command queue, event dispatch, connection table; ACL credits, fragmentation, reassembly; controller bring-up; status/opcode names |
+| `src/gap/` | `floss_gap.c`, `floss_gap_security.c`, `floss_gap_bonds.c`, `floss_gap_eir.c`, `floss_gap_internal.h` | Scan modes, link policy, connections; pairing (SSP, legacy PIN); bond store; EIR |
+| `src/l2cap/` | `floss_l2cap.c`, `floss_l2cap_sig.c`, `floss_l2cap_priv.h` | Channels and data path; signaling |
+| `src/sdp/` | `floss_sdp_server.c`, `floss_sdp_records.c`, `floss_sdp_de.c`, `floss_sdp_priv.h` | SDP server, HID/DID record builders, data elements |
+| `src/hid/` | `floss_hid.c` | Classic HID device (HIDP, mailbox, pacing, reconnect) |
+| `src/le/` | `floss_le.c`, `floss_att.c`, `floss_gatt.c`, `floss_gatt_services.c`, `floss_hogp.c`, `floss_smp.c`, `floss_smp_crypto.c/.h`, `floss_aes.c/.h` | See [LE.md](LE.md#1-map) |
+| `src/rfcomm/` | `floss_rfcomm.c`, `floss_rfcomm_mux.c`, `floss_spp.c`, `floss_rfcomm_int.h` | See [RFCOMM.md](RFCOMM.md#1-model) |
+| `transport/` | `h4/floss_h4.c`, `cyw43/floss_cyw43.c`, `sim/floss_sim.c` (+ headers) | HCI transports |
+
+`cmake/floss.cmake` compiles every `src/**/*.c` into the `floss` library;
+`FLOSS_ENABLE_LE` / `FLOSS_ENABLE_RFCOMM` compile the optional families out.
 
 ## 2. Who calls whom
 
@@ -51,7 +69,7 @@ There are exactly two kinds of cross-layer calls.
 |---|---|---|---|
 | **Downward** (request) | Public API of the lower layer | `include/floss/*.h` | HID calls `floss_l2cap_send_buf()`; L2CAP calls `floss_hci_acl_send()`; GAP calls `floss_hci_cmd()` |
 | **Upward** (notification) | Direct call to a named internal hook, no registration | `src/floss_internal.h` | HCI calls `floss_l2cap_on_pdu()`, `floss_gap_on_hci_event()`, `floss_l2cap_on_credits()` |
-| **To the app** | Callbacks registered at init | `floss_hid_callbacks_t`, `floss_gap_add_listener()`, `floss_l2cap_ops_t` | `on_connected`, `FLOSS_GAP_EVT_READY` |
+| **To the app** | Callbacks registered at init | `floss_hid_callbacks_t`, `floss_hogp_callbacks_t`, `floss_rfcomm_ops_t`, `floss_l2cap_ops_t`, `floss_gap_add_listener()`, `floss_le_add_listener()`, `floss_smp_add_listener()` | `on_connected`, `FLOSS_GAP_EVT_READY` |
 
 Rules:
 
@@ -66,16 +84,34 @@ Rules:
 
 The full hook list (`src/floss_internal.h`):
 
-| From -> To | Hooks |
+| From -> To | Hooks | Called from |
+|---|---|---|
+| HCI -> GAP | `floss_gap_on_hci_ready`, `floss_gap_on_hci_event` | `src/hci/floss_hci_bringup.c`, `src/hci/floss_hci.c` |
+| GAP -> L2CAP | `floss_l2cap_on_link_up`, `floss_l2cap_on_link_down`, `floss_l2cap_on_link_security` | `src/gap/floss_gap.c`, `src/gap/floss_gap_security.c` |
+| HCI -> L2CAP | `floss_l2cap_on_pdu`, `floss_l2cap_on_credits` | `src/hci/floss_hci_acl.c` |
+| L2CAP -> GAP | `floss_gap_require_security` | `src/l2cap/floss_l2cap.c`, `floss_l2cap_sig.c` |
+| HCI -> LE | `floss_le_on_hci_event`, `floss_le_on_encryption`, `floss_le_on_pdu`, `floss_le_on_link_down`, `floss_le_on_credits` | `src/hci/floss_hci.c`, `floss_hci_acl.c` |
+| GAP -> LE | `floss_le_on_hci_ready` (declared under "HCI -> LE"; GAP calls it after emitting `FLOSS_GAP_EVT_READY`) | `src/gap/floss_gap.c` |
+| init -> LE, SMP | `floss_le_init`, `floss_smp_init` | `src/floss.c` |
+| SMP -> LE | `floss_le_send_fixed`, `floss_le_on_security_changed` | `src/le/floss_smp.c` |
+| LE -> SMP | `floss_smp_on_link_up`, `floss_smp_on_link_down`, `floss_smp_on_pdu`, `floss_smp_on_le_event`, `floss_smp_on_encryption` | `src/le/floss_le.c` |
+| init -> RFCOMM | `floss_rfcomm_init` (registers PSM 0x0003) | `src/floss.c` |
+| core -> HID | `floss_hid_poll` (every `floss_poll()`) | `src/floss.c` |
+| core | `floss_debug_init` | `src/floss.c` |
+
+The LE and RFCOMM hooks exist only when `FLOSS_ENABLE_LE` /
+`FLOSS_ENABLE_RFCOMM` is set. `floss_internal.h` also defines
+`FLOSS_GAP_MAX_LISTENERS` (4).
+
+Inside the LE family the wiring uses functions from the "Lifecycle" /
+"Stack internal" sections of the public LE headers (not `floss_internal.h`):
+
+| From -> To | Functions |
 |---|---|
-| HCI -> GAP | `floss_gap_on_hci_ready`, `floss_gap_on_hci_event` |
-| GAP -> L2CAP | `floss_l2cap_on_link_up`, `floss_l2cap_on_link_down`, `floss_l2cap_on_link_security` |
-| HCI -> L2CAP | `floss_l2cap_on_pdu`, `floss_l2cap_on_credits` |
-| L2CAP -> GAP | `floss_gap_require_security` |
-| HCI -> LE | `floss_le_on_hci_ready`, `floss_le_on_hci_event`, `floss_le_on_encryption`, `floss_le_on_pdu`, `floss_le_on_link_down`, `floss_le_on_credits`, `floss_le_init` |
-| LE <-> SMP | `floss_le_send_fixed`, `floss_le_on_security_changed`; `floss_smp_init`, `floss_smp_on_link_up`, `floss_smp_on_link_down`, `floss_smp_on_pdu`, `floss_smp_on_le_event`, `floss_smp_on_encryption` |
-| init -> RFCOMM | `floss_rfcomm_init` (registers PSM 0x0003) |
-| core | `floss_debug_init` |
+| core -> LE | `floss_le_poll()` (every `floss_poll()`) |
+| LE GAP -> ATT/GATT | `floss_gatt_init()`, `floss_att_init()`, `floss_gatt_services_register_core()`, `floss_att_on_link_up()`, `floss_att_on_link_down()`, `floss_att_on_pdu()`, `floss_att_poll()`, `floss_gatt_on_link_down()`, `floss_gatt_cccd_sync()` |
+| LE GAP -> HOGP | `floss_hogp_reset()`, `floss_hogp_on_security()`, `floss_hogp_on_credits()`, `floss_hogp_poll()`, `floss_hogp_on_link_down()` |
+| ATT -> LE GAP | `floss_le_set_att_mtu()`, `floss_le_emit()` |
 
 ## 3. Threading model
 
@@ -84,20 +120,27 @@ The stack is **single-threaded and cooperative**. One execution context (the
 from that same context. Callbacks (HID, GAP listeners, L2CAP ops, timers) run
 inside `floss_poll()` in that context, so they may call any API.
 
-`floss_poll()` never blocks. It:
+`floss_poll()` (`src/floss.c`) never blocks. It:
 
-1. pumps the transport (`ops->poll`, which delivers RX packets),
-2. processes events and ACL data (dispatching upward),
-3. fires due timers (`floss_sched_run`),
-4. flushes queued TX (commands waiting for command credits, ACL waiting for
-   buffer credits),
-5. returns the microseconds until it next needs to run on its own.
+1. records `poll_gap` (time since the previous call),
+2. `floss_hci_poll()`: pumps the transport (`ops->poll`, which delivers RX
+   packets and dispatches events and ACL data upward), then retries TX the
+   transport refused earlier,
+3. `floss_hid_poll()`: sends Classic HID mailbox reports that are due,
+4. `floss_le_poll()` (`FLOSS_ENABLE_LE`): retries deferred ATT responses and
+   lets HOGP send on change,
+5. `floss_sched_run()`: fires due timers (HCI runs first so timer callbacks
+   such as the HID pacing tick see the freshest credits),
+6. returns the microseconds until the next timer deadline.
+
+Steps 2-4 run only after `floss_start()`.
 
 ### Calls that are safe from other contexts
 
 | Function | Safe from | Notes |
 |---|---|---|
 | `floss_hid_set_input()` | ISR, other core, other thread | Copies into a mailbox slot under a seqlock; uses `floss_hal_critical_enter/exit` only for a few instructions. Never blocks, never allocates. |
+| `floss_hogp_set_input()` | ISR, other core, other thread | Same seqlock mailbox for HID over GATT; one writer per report ID. |
 | `floss_hal_time_us()` | anywhere | HAL requirement. |
 
 Everything else, including `floss_hid_send_input_now()`, `floss_buf_alloc()` and
@@ -154,8 +197,11 @@ end.
    trace HID_SET_INPUT
                           (a) pacing timer fires (report_interval_us > 0)
                               on_report_tick()  <- last chance to update
-                           or credit/poll path (report_interval_us == 0)
+                           or credit/poll path (report_interval_us == 0,
+                              floss_hid_poll / floss_l2cap_on_credits)
                           HID: mailbox changed? (or send_unchanged)
+                          HID: link ready? L2CAP can send and
+                               conn->inflight < max_inflight x completion_batch
                           floss_buf_alloc(); copy 9 bytes at data
                           push 2: [0xA1 DATA|Input][0x01 ID]
                           floss_l2cap_send_buf(chan, buf, FLUSHABLE|PRIORITY)
@@ -182,7 +228,7 @@ Details:
   lands before the previous value was sent replaces it and increments
   `hid_reports_coalesced`.
 - **When to send.** `report_interval_us == 0`: send as soon as a controller
-  credit is free (the credit hook and every poll check). `> 0`: an absolute
+  credit is free (the credit hook and `floss_hid_poll()` check). `> 0`: an absolute
   deadline timer (`floss_timer_start_at`, `deadline += interval`) fires,
   calls `on_report_tick()`, and sends if the data changed or `send_unchanged`.
   If the tick finds no credit, `hid_send_deferred` increments and the report
@@ -193,6 +239,10 @@ Details:
   timeout (`floss_gap_set_flush_timeout`).
 - **Fragmentation.** HCI fragments PDUs larger than the controller's `acl_mtu`.
   Gamepad reports never need it.
+- **In-flight cap.** At most `max_inflight x floss_hci_completion_batch()`
+  input reports wait in the controller (`floss_conn_t.inflight`); otherwise
+  the report stays in the mailbox and newer state replaces it. See
+  [HID_GAMEPAD.md](HID_GAMEPAD.md#in-flight-cap-max_inflight).
 - **Ack latency.** `acl_ack_latency` measures send -> Number Of Completed
   Packets: air time, retransmissions and sniff waits all show up here.
 
@@ -239,21 +289,26 @@ opens.
 
 ## 7. Sequence: controller bring-up
 
-`floss_start()` -> `floss_hci_start()`; everything is asynchronous and ends
-with `FLOSS_GAP_EVT_READY`. Exact order lives in `src/hci`; the shape is:
+`floss_start()` -> `floss_hci_start()`; everything is asynchronous (each
+command is issued from the previous one's completion) and ends with
+`FLOSS_GAP_EVT_READY`. Sequence from `src/hci/floss_hci_bringup.c` and
+`src/gap/floss_gap.c`:
 
 | Step | Who | Action |
 |---|---|---|
 | 1 | Transport | `ops->open()`: power, firmware download (CYW43), UART setup. May block. |
-| 2 | HCI | `HCI_Reset` |
+| 2 | HCI | `HCI_Reset` (retried) |
 | 3 | HCI | Chipset `init_script` commands, if any (`floss_chipset_t`) |
-| 4 | HCI | Vendor set-address (`set_addr_opcode`) if `floss_hci_set_addr_override()` was used |
-| 5 | HCI | Read Local Version, Local Supported Commands, Local Supported Features, Buffer Size, BD_ADDR -> `floss_controller_info_t` |
-| 6 | HCI | LE Read Buffer Size / LE Read Local Features (if LE enabled and supported) |
-| 7 | HCI | Set Event Mask (+ Page 2), Write Simple Pairing Mode, Secure Connections Host Support, LE Host Support, LE Set Event Mask |
-| 8 | GAP | `floss_gap_on_hci_ready()`: name, Class of Device, EIR, page scan activity/type, default link policy, scan enable |
-| 9 | LE | `floss_le_on_hci_ready()`: advertising data, advertising enable |
-| 10 | GAP | `FLOSS_GAP_EVT_READY` to listeners; HID starts reconnect or becomes discoverable |
+| 4 | HCI | Read Local Version, Local Supported Commands, Local Supported Features, BD_ADDR |
+| 5 | HCI | Vendor set-address (`set_addr_opcode`) + Read BD_ADDR again, if `floss_hci_set_addr_override()` was used |
+| 6 | HCI | Read Buffer Size -> `floss_controller_info_t` (`acl_mtu`, `acl_total`) |
+| 7 | HCI | If the controller does LE: Write LE Host Support, LE Read Buffer Size, LE Read Local Features, LE Set Event Mask |
+| 8 | HCI | Set Event Mask -> `floss_gap_on_hci_ready()` |
+| 9 | GAP | Simple Pairing Mode, Secure Connections Host Support, inquiry mode, page/inquiry scan type and activity, default link policy, Class of Device, local name, EIR, page timeout, connection accept timeout, scan enable |
+| 10 | GAP | `FLOSS_GAP_EVT_READY` to listeners (HID starts reconnecting or becomes discoverable), then `floss_le_on_hci_ready()`: LE applies address, advertising parameters/data and enables advertising if started |
+
+Non-essential failures are logged and skipped (a controller that rejects an
+LE command still works for Classic).
 
 Each command is subject to `FLOSS_HCI_CMD_TIMEOUT_US`; a timeout calls the
 command's callback with status `0xFF` and increments `cmd_timeouts`.
@@ -311,18 +366,25 @@ Contract (from `floss_internal.h`):
 
 - On LE (Enhanced) Connection Complete, HCI fills a `floss_conn_t` with
   `le = true` and `addr_type`, then forwards the subevent to
-  `floss_le_on_hci_event()`. LE calls `floss_smp_on_link_up()`.
+  `floss_le_on_hci_event()`. LE fills its `floss_le_link_t`, then calls
+  `floss_att_on_link_up()` and `floss_smp_on_link_up()`.
 - ACL PDUs on LE links go to `floss_le_on_pdu()` (basic header included), never
   to Classic L2CAP. LE uses fixed channels only: 0x0004 ATT, 0x0005 LE
   signaling, 0x0006 SMP.
 - SMP sends through `floss_le_send_fixed()` and reports the resulting level via
   `floss_le_on_security_changed()` (1 none, 2 encrypted unauthenticated,
   3 encrypted authenticated, 4 Secure Connections authenticated). ATT checks
-  attribute permissions against that level.
+  attribute permissions against that level; LE then runs
+  `floss_gatt_cccd_sync()` (save or restore the bonded peer's CCCDs) and
+  `floss_hogp_on_security()`.
 - SMP receives the LE meta subevents it needs: 0x05 LTK Request, 0x08 Read
   Local P-256 Public Key Complete, 0x09 Generate DHKey Complete; and encryption
   changes via `floss_smp_on_encryption()`.
-- Disconnection calls `floss_le_on_link_down()`; credits call
-  `floss_le_on_credits()` (LE buffers, or shared when `le_acl_total == 0`).
+- Disconnection calls `floss_le_on_link_down()`, which fans out to SMP,
+  ATT, GATT (CCCD slot) and HOGP. Credits call `floss_le_on_credits()` (LE
+  buffers, or shared when `le_acl_total == 0`), which retries ATT and lets
+  HOGP send.
+- Every `floss_poll()` calls `floss_le_poll()` (`floss_att_poll()` +
+  `floss_hogp_poll()`).
 
-See [LE.md](LE.md) for the service design.
+See [LE.md](LE.md) for the APIs.

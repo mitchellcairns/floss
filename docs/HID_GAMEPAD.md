@@ -1,7 +1,10 @@
 # Building a HID gamepad with FLOSS
 
 This guide covers the Classic HID device role (`include/floss/floss_hid.h`).
-For HID-over-GATT on LE see [LE.md](LE.md).
+For HID over GATT on LE see [LE.md](LE.md). The reference application is
+`examples/gamepad` (built for the Pico W as `floss_gamepad`); measured
+timing and the reasoning behind every default are in
+[PERFORMANCE.md](PERFORMANCE.md).
 
 ## 1. Minimal setup
 
@@ -20,6 +23,8 @@ cfg.report_descriptor = k_desc;
 cfg.report_descriptor_len = sizeof k_desc;
 cfg.subclass = FLOSS_HID_SUBCLASS_GAMEPAD;
 cfg.report_interval_us = 1000;           /* 1 kHz paced; 0 = send on change */
+cfg.qos_latency_us = 1250;               /* ask the host to poll every 2 slots (optional) */
+/* cfg.max_inflight stays 2: see section 5 */
 floss_hid_init(&cfg, &k_cb);             /* after floss_init(), before floss_start() */
 ```
 
@@ -131,6 +136,12 @@ floss_hid_set_input(1, r, sizeof r);   /* any context: main loop, ISR, core 1 */
 
 Change at runtime with `floss_hid_set_report_interval()`.
 
+Measured on a Pico W (PERFORMANCE.md, finding 6): pacing at 1000 us gives the
+most even delivery (jitter p50/p90 0.82/1.32 ms); send-on-change gets data to
+the radio sooner (report age 708 vs 947 us) but follows the controller's
+batched completions. Pacing at the air rate (1250 us) measured the same as
+1000 us.
+
 ### Just-in-time sampling with `on_report_tick`
 
 In paced mode `on_report_tick()` runs immediately before each report is
@@ -151,6 +162,54 @@ core and just publish from there instead.
 
 ## 5. Latency trade-offs
 
+### Recommended settings
+
+From [PERFORMANCE.md](PERFORMANCE.md) ("Result: defaults"):
+
+| Setting | Value | Why |
+|---|---|---|
+| `max_inflight` | 2 (default) | Reports queued in the controller cannot be superseded; the cap bounds latency |
+| `report_interval_us` | 1000 | Most even delivery |
+| `qos_latency_us` | 1250 | Harmless; helps hosts that poll slowly by default |
+| `flush_timeout_ms` | 0 (default) | Short flush timeouts stalled the CYW43439 |
+| `sniff_max_interval` | 0 (default) | Active mode: lowest latency |
+| `FLOSS_HID_CONNECTABLE_WHILE_CONNECTED` | 0 (default) | Page scan steals air time |
+
+Result on a Pico W with Windows: ~715-719 reports/s (90 % of the 800/s
+ceiling of a 1.25 ms poll), jitter p50 0.8 ms, p99 8.5 ms.
+
+### In-flight cap (`max_inflight`)
+
+The most important latency setting. A report handed to the controller can
+no longer be replaced by newer state, so every report queued there adds a
+full air round of delay. `max_inflight` caps un-acknowledged input reports
+on the link (0 = as many as the controller has buffers; default 2). The
+effective cap is multiplied by the chipset's `completion_batch`
+(`floss_hci_completion_batch()`): the CYW43439 reports completions two at a
+time, a few ms late, so the Pico W runs with 4; a controller that reports
+packets one by one runs with 2. Too low starves the link (an effective cap
+of 1 packet on the Pico W delivered 4 reports/s), too high grows jitter
+(unlimited: p99 27 ms).
+Change at runtime with `floss_hid_set_max_inflight()`.
+
+### Poll latency (`qos_latency_us`)
+
+A Classic peripheral transmits only when the central polls it. If
+`qos_latency_us` is non-zero, HID calls `floss_gap_qos_setup(handle,
+qos_latency_us, 0)` after connecting, asking the central for that poll
+interval (1250 us = every 2 slots). Windows already polls HID links at
+1.25 ms, so it changed nothing measurable there; other hosts default to
+much slower polling.
+
+### Page scan while connected
+
+`FLOSS_HID_CONNECTABLE_WHILE_CONNECTED` (default 0, override like any
+config macro) keeps page scan on while a host is connected, so a second
+host can reach the device. Page scan windows take the radio away from the
+link: measured 648 instead of 719 reports/s and p99 jitter 22 instead of
+8.5 ms. Page scan is re-enabled when the link drops, so reconnects are
+unaffected.
+
 ### Flush timeout
 
 `cfg.flush_timeout_ms` (or `floss_gap_set_flush_timeout()`). Input reports are
@@ -161,7 +220,10 @@ sent FLUSHABLE.
 | 0 (default) | Reliable: the controller retransmits until delivered. A fade delays every later report. |
 | Finite (e.g. 2-3x the report interval) | The controller drops a report it could not deliver in time; the next, fresher report goes out instead. Best for continuous state. |
 
-Output reports and control traffic are unaffected (not flushable).
+Output reports and control traffic are unaffected (not flushable). With the
+CYW43439 a 2-5 ms flush timeout discarded most reports and caused
+multi-second stalls on the host; keep 0 there and let `max_inflight` bound
+staleness.
 
 ### Sniff vs active
 
@@ -184,6 +246,24 @@ How long a silent link survives before both sides drop it (default 0x7D00 slots
 central on the link; otherwise the host decides. Shorter = faster detection of a
 lost host (and faster reconnect), but more spurious drops under interference.
 Advertise a preference via the SDP `supervision_timeout` field.
+
+### Classic or LE?
+
+| | Classic HID | LE HID over GATT |
+|---|---|---|
+| Transmit opportunity | Every central poll, down to 1.25 ms (800/s ceiling) | Once per connection interval (Windows grants 15 ms: 66.7/s) |
+| Measured | ~720 reports/s, jitter p50 0.8 ms | One report per connection event, jitter p50 1.1 ms |
+| Use when | Lowest latency matters | The host or the power budget requires LE |
+
+### Measuring: the millisecond-counter axis
+
+In demo mode `examples/gamepad` (and `examples/le_gamepad`) put a
+millisecond counter on the right stick X axis (`Z`): every report says when
+it was built. `tools/hostprobe` (`floss_hostprobe pads <seconds>`) decodes it
+on the host to get delivered reports/s, coalescing, inter-arrival and
+latency jitter. On the Pico W console, keys `0`-`8`, `Q`, `F`, `I`, `P`
+change `max_inflight`, QoS, flush timeout, interval and page scan live
+(see [DEBUGGING.md](DEBUGGING.md), section 6).
 
 ## 6. Connection lifecycle
 

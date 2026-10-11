@@ -47,12 +47,27 @@ floss_err_t floss_hal_store_delete(uint16_t key);
 
 | | |
 |---|---|
-| Data | Small values (< 64 bytes) under 16-bit keys. |
-| Keys used | `FLOSS_STORE_KEY_LAST_HOST` (0x0001), `FLOSS_STORE_KEY_BOND_BASE` (0x0100) + index `0..FLOSS_MAX_BONDS-1`. Applications use `>= FLOSS_STORE_KEY_APP_BASE` (0x8000). |
+| Data | Small values (<= 64 bytes) under 16-bit keys. |
+| Keys used | See the key map below. |
 | read | Return bytes read (<= len) or `FLOSS_ERR_NOT_FOUND`. |
-| write | Create or replace. Return `FLOSS_OK` or a negative error. Called when a link key is created (pairing): a few times per pairing, never per packet. Flash erase time is acceptable but blocks the radio loop; prefer a write-behind or a wear-levelled sector. |
+| write | Create or replace. Return `FLOSS_OK` or a negative error. Called when keys are created or bonds change (pairing, bonded LE reconnection that changes CCCDs), never per packet. Flash erase time is acceptable but blocks the radio loop (it shows up in the `transport_poll_time` stat, see DEBUGGING.md); prefer a write-behind or a wear-levelled sector. |
 | delete | Deleting a missing key is not an error. |
 | Failure | Errors are logged; the link works but the bond will not survive a reset. |
+
+Key map (`i` = bond index `0..FLOSS_MAX_BONDS-1`):
+
+| Key | Macro | Header | Contents | Size |
+|---|---|---|---|---|
+| 0x0001 | `FLOSS_STORE_KEY_LAST_HOST` | `floss_hal.h` | Address of the most recent Classic bond | 6 |
+| 0x0100 + i | `FLOSS_STORE_KEY_BOND_BASE` | `floss_hal.h` | Classic bond (address, link key, key type) | 31 |
+| 0x01F0 | `FLOSS_SMP_STORE_KEY_IRK` | `floss_smp.h` | Our LE Identity Resolving Key | 16 |
+| 0x0200 + i | `FLOSS_SMP_STORE_KEY_BOND_BASE` | `floss_smp.h` | LE bond (identity, LTK, peer IRK) | 56 |
+| 0x0280 | `FLOSS_LE_STORE_KEY_STATIC_ADDR` | `floss_le.h` | Generated LE random static address | 6 |
+| 0x0300 + i | `FLOSS_GATT_STORE_KEY_CCCD_BASE` | `floss_gatt.h` | CCCD values of LE bond i | <= 59 |
+| >= 0x8000 | `FLOSS_STORE_KEY_APP_BASE` | `floss_hal.h` | Free for the application | |
+
+With `FLOSS_MAX_BONDS = 4` and LE enabled the stack needs up to 15 entries
+(the Pico W HAL keeps 16 of 64 bytes).
 
 RAM-only stub (fine for tests and bring-up):
 
@@ -243,6 +258,18 @@ Pass it as `floss_init_t.chipset` (NULL = generic).
 | `name` | For logs. |
 | `set_addr_opcode` | Vendor command that sets the public address (6 bytes, wire order). Used when the app calls `floss_hci_set_addr_override()` before `floss_start()`. 0 = unsupported. |
 | `init_script`, `init_script_len` | Extra commands sent right after `HCI_Reset`, as a flat byte script of repeated `[opcode_lo, opcode_hi, param_len, params...]`. |
+| `completion_batch` | How many ACL packets the controller tends to acknowledge per Number Of Completed Packets event (0/1 = one by one). Read back with `floss_hci_completion_batch()`. |
+
+**Why `completion_batch` exists.** The HID and HOGP input paths cap the
+packets waiting inside the controller (`max_inflight`), because a queued
+report can no longer be replaced by newer state. Some controllers report
+completions late and in batches: the CYW43439 reports them two at a time,
+3-8 ms after the packets left, and a single outstanding packet waits
+~250 ms. With a cap of 2 the stack would think the link is full while both
+packets are long delivered, and the link would idle. The effective cap is
+therefore `max_inflight x completion_batch` (4 on the Pico W). Measure your
+controller with the `acl_ack_latency` histogram and a snoop capture; the
+derivation is in [PERFORMANCE.md](PERFORMANCE.md).
 
 ```c
 static const uint8_t k_script[] = {
@@ -254,8 +281,9 @@ const floss_chipset_t my_chipset = {
 };
 ```
 
-CYW43439 ships as `floss_chipset_cyw43` (set-address opcode 0xFC01).
-`floss_cyw43_default_addr()` derives the recommended address (WLAN MAC + 1).
+CYW43439 ships as `floss_chipset_cyw43` (set-address opcode 0xFC01,
+`completion_batch = 2`). `floss_cyw43_default_addr()` derives the
+recommended address (WLAN MAC + 1).
 
 ---
 
@@ -298,7 +326,26 @@ values (use `PUBLIC` in CMake).
 | `FLOSS_ENABLE_STATS` | 1 | Counters + histograms. |
 | `FLOSS_ENABLE_SNOOP` | 1 | HCI snoop hook support. |
 | `FLOSS_ENABLE_DEBUG_PINS` | 0 | Call `floss_hal_debug_pin()` around hot paths. |
-| `FLOSS_ASSERT(expr)` | calls `floss_assert_fail()` | Define before including to replace. |
+
+The table above is exactly `floss_config.h`. Other defaults can be
+overridden the same way (`FLOSS_USER_CONFIG_FILE` or `-D`); they live next
+to the code they size:
+
+| Macro | Default | Where | Meaning |
+|---|---|---|---|
+| `FLOSS_ASSERT(expr)` | calls `floss_assert_fail()` | `floss_debug.h` | Define before including to replace. |
+| `FLOSS_GATT_MAX_TABLES` | 8 | `floss_gatt.h` | Registered attribute tables. |
+| `FLOSS_ATT_PREPARE_MAX` | 512 | `floss_gatt.h` | Prepare Write queue bytes. |
+| `FLOSS_HOGP_MAX_REPORTS` | 6 | `floss_hogp.h` | Reports in the HID service. |
+| `FLOSS_RFCOMM_MAX_SERVERS` | 2 | `floss_rfcomm.h` | Registered RFCOMM server channels. |
+| `FLOSS_RFCOMM_RX_CREDITS` | 7 | `floss_rfcomm.h` | Receive credits kept outstanding per DLC (automatic mode). |
+| `FLOSS_RFCOMM_CTRL_QUEUE_LEN` | 6 | `floss_rfcomm.h` | Control frames buffered per session while L2CAP is busy. |
+| `FLOSS_SPP_MAX_INSTANCES` | 1 | `floss_rfcomm.h` | Serial port records. |
+| `FLOSS_HID_CONNECTABLE_WHILE_CONNECTED` | 0 | `src/hid/floss_hid.c` | Keep page scan on while a host is connected (costs air time, see HID_GAMEPAD.md). |
+| `FLOSS_HID_MAX_DESCRIPTOR` | 512 | `src/hid/floss_hid.c` | Largest HID report descriptor. |
+| `FLOSS_HID_RECONNECT_RETRIES`, `FLOSS_HID_RECONNECT_BACKOFF_US` | 3, 1 000 000 | `src/hid/floss_hid.c` | Reconnect paging attempts. |
+| `FLOSS_TRACE_POLL_MIN_GAP_US` | 500 | `src/floss.c` | Only polls at least this late are traced. |
+| `FLOSS_CYW43_FAST_BUS` | 1 | `transport/cyw43/floss_cyw43.c` | CYW43 bulk ring access (section 6). |
 
 Sizing tips: watch `floss_buf_low_watermark()` and `buf_alloc_failures`; a
 gamepad-only build can drop `FLOSS_BUF_COUNT` to 8, `FLOSS_ENABLE_LE`/`RFCOMM`
@@ -327,17 +374,18 @@ to 0 and `FLOSS_L2CAP_MTU`/`FLOSS_BUF_SIZE` accordingly.
 
 The Pico SDK's `pico_cyw43_arch` libraries initialise the CYW43439 and, with
 the radio HCI enabled, also start the SDK's bundled third-party host stack
-(BTstack) and its HCI transport. FLOSS wants the bus and firmware loader, not
+and its HCI transport. FLOSS wants the bus and firmware loader, not
 that stack, so `ports/pico_w` **bypasses `cyw43_arch`** and links the lower
 pieces directly:
 
 | SDK piece | Why |
 |---|---|
-| `pico_cyw43_driver` | `cyw43_driver_init()`: bus, WLAN core, interrupt glue |
-| `cybt_shared_bus` | radio-core firmware download and the HCI read/write calls on the shared bus |
+| `pico_cyw43_driver` | `cyw43_driver_init()`: bus, WLAN core, interrupt glue; its shared-bus radio code (`cybt_shared_bus_driver.h`) downloads the radio-core firmware and provides the HCI ring access |
+| `cyw43_driver_picow` | the Pico W bus driver underneath |
 | `pico_async_context_poll` | the async context the cyw43 driver runs its work in |
 
-Run loop (sketch; the real one is in `ports/pico_w`):
+Run loop (sketch; the real one in `ports/pico_w/main.c` spins instead of
+waiting, because the demo favours latency over power):
 
 ```c
 static async_context_poll_t g_ctx;
@@ -368,9 +416,22 @@ Notes:
 
 - The transport header on the shared bus is `[len0 len1 len2 type]`, so
   `headroom = 4` and TX stays zero-copy.
+- **Fast bus path** (`FLOSS_CYW43_FAST_BUS`, default 1). The SDK's packet
+  calls do a full wake/index/data/index/interrupt handshake per call and two
+  calls per received packet (~250 us per TX packet, ~600 us per RX packet,
+  loop blocked). The fast path drives the same radio rings through the SDK's
+  shared-bus primitives: RX reads all ring indices in one transfer, pulls
+  everything pending in one bulk read, acknowledges once; TX is one index
+  read, data write, index write and interrupt. Measured gain in
+  [PERFORMANCE.md](PERFORMANCE.md) (finding 5). Build with
+  `FLOSS_CYW43_FAST_BUS=0` to fall back to the SDK calls.
+- The chipset descriptor sets `completion_batch = 2` (section 3).
 - The radio firmware comes from the cyw43-driver inside the Pico SDK; FLOSS
   does not ship it (see LEGAL.md).
 - `floss_hid_set_input()` may be called from core 1 (e.g. a tight input
   sampling loop); the HAL critical section uses a hardware spinlock.
 - The exact SDK library list and compile definitions are in
   `ports/pico_w/CMakeLists.txt`.
+- Toolchain setup, Windows build notes (prebuilt `pioasm` / `picotool`
+  directories) and flashing are in
+  [ports/pico_w/README.md](../ports/pico_w/README.md).
