@@ -118,7 +118,10 @@ typedef struct {
      * (0 = as many as the controller has buffers). Keeping this small (1-2)
      * is the single most important latency setting: reports queued inside the
      * controller cannot be replaced by newer state, so each one in the queue
-     * adds a full air-interface round of delay. Default 2.
+     * adds a full air-interface round of delay. Default 2. The effective cap
+     * is multiplied by the chipset's completion_batch (CYW43439: 2 -> 4),
+     * because a controller that reports completions late/in pairs would
+     * otherwise leave transmit opportunities unused.
      */
     uint8_t max_inflight;
     /**

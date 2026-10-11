@@ -675,6 +675,11 @@ static void on_event(const uint8_t *pkt, uint16_t len) {
 /* Lifecycle                                                                */
 /* ======================================================================== */
 
+uint8_t floss_hci_completion_batch(void) {
+    uint8_t b = G.chipset ? G.chipset->completion_batch : 0;
+    return b ? b : 1;
+}
+
 void floss_hci_init(floss_transport_t *transport, const floss_chipset_t *chipset) {
     memset(&G, 0, sizeof(G));
     G.transport = transport;

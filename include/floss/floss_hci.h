@@ -283,6 +283,9 @@ bool floss_hci_acl_can_send_now(uint16_t handle);
 /** Free controller ACL buffers right now. */
 uint16_t floss_hci_acl_credits(void);
 
+/** Chipset's completion batching factor (>= 1), see floss_chipset_t.completion_batch. */
+uint8_t floss_hci_completion_batch(void);
+
 /* ------------------------------------------------------------------------ */
 /* Lifecycle (called by floss.c)                                            */
 /* ------------------------------------------------------------------------ */

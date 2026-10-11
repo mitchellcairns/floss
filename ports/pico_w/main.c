@@ -172,6 +172,7 @@ static uint8_t tune_inflight = GAMEPAD_MAX_INFLIGHT;
 static uint32_t tune_qos_us = GAMEPAD_QOS_LATENCY_US;
 static uint16_t tune_flush_ms = GAMEPAD_FLUSH_TIMEOUT_MS;
 static uint32_t tune_interval_us = GAMEPAD_REPORT_INTERVAL_US;
+static bool tune_page_scan = false; /* connectable while connected (HID default: off) */
 
 static void tune_print(void) {
     printf("tune: inflight %u  qos %lu us  flush %u ms  interval %lu us\n", tune_inflight,
@@ -201,6 +202,9 @@ static bool tune_key(int c) {
         while (i < FLOSS_ARRAY_SIZE(interval_steps) && interval_steps[i] != tune_interval_us) i++;
         tune_interval_us = interval_steps[(i + 1) % FLOSS_ARRAY_SIZE(interval_steps)];
         floss_hid_set_report_interval(tune_interval_us);
+    } else if (c == 'P') {
+        tune_page_scan = !tune_page_scan;
+        floss_gap_set_scan(false, tune_page_scan);
     } else if (c != 'm') {
         return false;
     }

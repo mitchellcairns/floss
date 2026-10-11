@@ -164,6 +164,9 @@ const floss_chipset_t floss_chipset_cyw43 = {
     .set_addr_opcode = 0xFC01, /* vendor: write device address, 6 bytes LSB first */
     .init_script = NULL,
     .init_script_len = 0,
+    /* Measured: completions are reported two packets at a time, 3-8 ms after
+     * the packet left (a single outstanding packet waits ~250 ms). */
+    .completion_batch = 2,
 };
 
 void floss_cyw43_default_addr(floss_addr_t *addr) {

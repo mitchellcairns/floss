@@ -139,6 +139,16 @@ typedef struct floss_chipset {
      */
     const uint8_t *init_script;
     uint16_t init_script_len;
+
+    /**
+     * How many ACL packets the controller tends to acknowledge per Number Of
+     * Completed Packets event (0/1 = one by one). Some controllers batch
+     * completions (the CYW43439 reports them in pairs, a few ms late), so a
+     * latency-driven in-flight cap must be scaled by this or the link idles
+     * while a finished packet waits to be reported. See
+     * floss_hci_completion_batch() and floss_hid_config_t.max_inflight.
+     */
+    uint8_t completion_batch;
 } floss_chipset_t;
 
 #ifdef __cplusplus
