@@ -253,7 +253,7 @@ static const floss_hid_callbacks_t hid_no_callbacks;
 
 static uint8_t hid_sdp_buf[512 + FLOSS_HID_MAX_DESCRIPTOR];
 static floss_sdp_record_t hid_sdp_rec;
-static uint8_t did_sdp_buf[96];
+static uint8_t did_sdp_buf[160];
 static floss_sdp_record_t did_sdp_rec;
 
 /* Forward declarations ---------------------------------------------------- */
