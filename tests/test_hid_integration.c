@@ -273,7 +273,40 @@ TEST(reinit_without_hid_forgets_session) {
     floss_tc_assert_sim_clean();
 }
 
+static void reconnect_on_ready(const floss_gap_evt_t *evt, void *user) {
+    (void)user;
+    if (evt->type == FLOSS_GAP_EVT_READY) {
+        floss_hid_connect(&floss_tc_host);
+    }
+}
+
+TEST(app_reconnect_from_ready_listener_added_before_hid) {
+    floss_transport_t *t = floss_tc_sim_init(NULL);
+    floss_tc_hid_config(&g_cfg, 0);
+    g_cfg.auto_reconnect = false;
+    start(t);
+    floss_sim_chan_t *ctrl, *intr;
+    (void)floss_tc_hid_session(&ctrl, &intr);
+
+    /* Reboot. The application listens before HID does and reconnects on READY:
+     * HID's own READY handling must not clear that connect. */
+    floss_sim_log_clear();
+    floss_init_t init = {.transport = t, .chipset = NULL};
+    ASSERT_EQ(floss_init(&init), FLOSS_OK);
+    ASSERT_EQ(floss_gap_add_listener(reconnect_on_ready, NULL), FLOSS_OK);
+    ASSERT_EQ(floss_hid_init(&g_cfg, &k_callbacks), FLOSS_OK);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    if (!floss_tc_wait_hid_connected(5000)) {
+        FAIL("HID did not reconnect (state %d)", (int)floss_hid_state());
+    }
+    const floss_sim_link_t *link = floss_sim_link_by_addr(&floss_tc_host);
+    ASSERT_NOT_NULL(link);
+    ASSERT_TRUE(link->stack_initiated);
+    floss_tc_assert_sim_clean();
+}
+
 static const floss_test_case_t tests[] = {
+    TEST_CASE(app_reconnect_from_ready_listener_added_before_hid),
     TEST_CASE(reinit_without_hid_forgets_session),
     TEST_CASE(raw_record_open_channels_app_scan),
     TEST_CASE(can_send_now_false_without_session),

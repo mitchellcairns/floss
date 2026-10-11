@@ -1667,9 +1667,17 @@ static const floss_l2cap_ops_t hid_intr_ops = {
 
 /* ---- GAP events ----------------------------------------------------------- */
 
-static void hid_on_ready(void) {
+void floss_hid_on_controller_ready(void) {
     /* Controller (re)started: any previous link is gone. */
-    hid_end_session();
+    if (hid.cfg) {
+        hid_end_session();
+    }
+}
+
+static void hid_on_ready(void) {
+    if (hid.state != FLOSS_HID_STATE_IDLE) {
+        return; /* the application already started a connect from its READY handler */
+    }
     const floss_bond_t *b = floss_gap_bond_last();
     if (hid.cfg->auto_reconnect && b) {
         hid_set_scan(false, true);

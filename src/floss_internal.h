@@ -128,6 +128,14 @@ void floss_hid_poll(void);
  */
 void floss_hid_reset(void);
 
+/**
+ * The controller (re)started: every link is gone. Called by GAP just before
+ * FLOSS_GAP_EVT_READY reaches the listeners, so a connect an application
+ * starts from its own READY handler is never cleared afterwards, whatever
+ * the listener order.
+ */
+void floss_hid_on_controller_ready(void);
+
 /* ===================== core ============================================== */
 
 void floss_debug_init(void);

@@ -367,6 +367,7 @@ static void ready_next(void)
             s_gap.ready = true;
             FLOSS_LOGI(GAP, "ready (scan: %s%s)", s_gap.discoverable ? "discoverable " : "",
                        s_gap.connectable ? "connectable" : "");
+            floss_hid_on_controller_ready();
             floss_gap_emit_simple(FLOSS_GAP_EVT_READY, FLOSS_GAP_NO_HANDLE, NULL, 0);
 #if FLOSS_ENABLE_LE
             floss_le_on_hci_ready();
