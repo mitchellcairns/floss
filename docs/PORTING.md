@@ -380,19 +380,20 @@ pieces directly:
 
 | SDK piece | Why |
 |---|---|
-| `pico_cyw43_driver` | `cyw43_driver_init()`: bus, WLAN core, interrupt glue; its shared-bus radio code (`cybt_shared_bus_driver.h`) downloads the radio-core firmware and provides the HCI ring access |
-| `cyw43_driver_picow` | the Pico W bus driver underneath |
-| `pico_async_context_poll` | the async context the cyw43 driver runs its work in |
+| `cyw43_driver_picow` | the Pico W bus driver, the cyw43-driver core and its shared-bus radio code (`cybt_shared_bus_driver.h`: radio-core firmware download, HCI ring access) |
+| `pico_cyw43_driver_headers` | the driver's configuration header only |
 
-Run loop (sketch; the real one in `ports/pico_w/main.c` spins instead of
-waiting, because the demo favours latency over power):
+**No async_context, no RTOS, no interrupts (default, `FLOSS_PICO_BARE=ON`).**
+`transport/cyw43/floss_cyw43_bare.c` implements the handful of hooks the
+cyw43-driver needs (lock, delays, "poll me" requests, MAC helpers) for a
+single execution context. Instead of a GPIO interrupt it reads the radio's
+host-wake line on every transport poll, and runs `cyw43_poll()` right there,
+inside `floss_poll()`. The main loop is the whole story, like TinyUSB's
+`tud_task()`:
 
 ```c
-static async_context_poll_t g_ctx;
-
 int main(void) {
-    async_context_poll_init_with_defaults(&g_ctx);
-    cyw43_driver_init(&g_ctx.core);                  /* no cyw43_arch_init() */
+    floss_cyw43_driver_init();                       /* no cyw43_arch, no async_context */
 
     floss_addr_t addr;
     floss_cyw43_default_addr(&addr);
@@ -403,14 +404,24 @@ int main(void) {
     floss_start();
 
     for (;;) {
-        async_context_poll(&g_ctx.core);             /* service the cyw43 driver */
-        uint32_t idle_us = floss_poll();
+        uint32_t idle_us = floss_poll();             /* radio driver + stack */
         app_work();
-        async_context_wait_for_work_until(&g_ctx.core,
-            make_timeout_time_us(FLOSS_MIN(idle_us, 1000)));
+        /* spin, or sleep up to idle_us: your call */
     }
 }
 ```
+
+Driver work is therefore visible and accountable: it shows up in
+`floss_poll()`'s time (`transport_poll_time` in `floss_stats`), never in a
+hidden worker. Measured against the async_context glue on the Pico W pad ->
+dongle link: 797 vs 789 reports/s, report-interval p99 1.33 vs ~2 ms,
+latency jitter p99 2.15 vs 3.08 ms. Rule: call every FLOSS function from one
+core and never from an interrupt (except the documented ISR-safe input
+mailboxes).
+
+`FLOSS_PICO_BARE=OFF` keeps the SDK's `pico_cyw43_driver` on an
+`async_context_poll` instead; the loop must then also call
+`async_context_poll()` before `floss_poll()`.
 
 Notes:
 

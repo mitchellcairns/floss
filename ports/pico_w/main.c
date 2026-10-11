@@ -6,12 +6,12 @@
  *
  * Structure:
  *
- *   boot:  USB serial -> HAL (flash store, spin lock) -> async context +
- *          CYW43 driver -> floss_init (CYW43 transport + chipset quirks)
+ *   boot:  USB serial -> HAL (flash store, spin lock) -> CYW43 driver
+ *          (bare-metal glue) -> floss_init (CYW43 transport + chipset quirks)
  *          -> address override -> gamepad app (HID) -> floss_start
  *
- *   loop:  async_context_poll   CYW43 driver housekeeping (bus IRQ work)
- *          floss_poll           the whole stack, never blocks
+ *   loop:  floss_poll           the whole stack incl. the radio driver, never blocks
+ *          (async_context_poll  only with FLOSS_PICO_BARE=OFF)
  *          inputs               BOOTSEL as button 1 (sampled every 50 ms)
  *          gamepad_app_task     publish the report if it changed
  *          LED / console / status
@@ -20,8 +20,9 @@
  * latency and pacing precision matter more than power on this demo. A
  * battery product would __wfe() until the next deadline or radio IRQ.
  *
- * The CYW43 driver is used without pico_cyw43_arch: we own the
- * async_context and only need the shared-bus radio interface.
+ * The CYW43 driver is used without pico_cyw43_arch and, by default, without
+ * any async_context: transport/cyw43/floss_cyw43_bare.c runs it inside
+ * floss_poll().
  *
  * LED (on the CYW43, so only driven once the controller is up):
  *   fast blink  no bonded host: discoverable, waiting to pair
@@ -31,7 +32,9 @@
 #include <stdio.h>
 
 #include "pico/stdlib.h"
+#if !FLOSS_CYW43_BARE
 #include "pico/async_context_poll.h"
+#endif
 #include "pico/cyw43_driver.h"
 #include "cyw43.h"
 #include "hardware/sync.h"
@@ -89,7 +92,9 @@ static unsigned app_bond_count(void) {
 #define LED_FAST_HALF_US     125000u
 #define LED_SLOW_HALF_US     500000u
 
+#if !FLOSS_CYW43_BARE
 static async_context_poll_t async_ctx;
+#endif
 static floss_addr_t local_addr;
 static bool snoop_on;
 static bool user_discoverable;
@@ -398,12 +403,19 @@ int main(void) {
 
     floss_pico_hal_init();
 
+#if FLOSS_CYW43_BARE
+    /* Bare-metal radio glue: no async_context, no interrupts (floss_cyw43_bare.c). */
+    if (!floss_cyw43_driver_init()) {
+        fatal("cyw43 driver init", 0);
+    }
+#else
     if (!async_context_poll_init_with_defaults(&async_ctx)) {
         fatal("async context init", 0);
     }
     if (!cyw43_driver_init(&async_ctx.core)) {
         fatal("cyw43 driver init", 0);
     }
+#endif
 
     floss_init_t init = {
         .transport = floss_cyw43_transport(),
@@ -440,7 +452,9 @@ int main(void) {
     uint32_t next_bootsel = time_us_32();
     for (;;) {
         uint32_t t = time_us_32();
+#if !FLOSS_CYW43_BARE
         async_context_poll(&async_ctx.core);
+#endif
         t = prof_mark(PROF_ASYNC, t);
         floss_poll();
         t = prof_mark(PROF_FLOSS, t);

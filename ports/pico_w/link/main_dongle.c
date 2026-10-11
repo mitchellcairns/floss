@@ -21,7 +21,7 @@
  *          flash -> floss_link_init (DONGLE role, PING every 100 ms) ->
  *          floss_start
  *
- *   loop:  async_context_poll   CYW43 driver housekeeping
+ *   loop:  (async_context_poll  only with FLOSS_PICO_BARE=OFF)
  *          floss_poll           the whole stack; on_input hands the report
  *                               to USB right away if the endpoint is free
  *          tud_task             USB device (enumeration, CDC, HID transfers)

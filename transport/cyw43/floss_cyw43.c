@@ -235,6 +235,10 @@ static int cyw43_fast_rx(floss_transport_t *t) {
 #endif
 
 static int floss_cyw43_poll(floss_transport_t *t) {
+#if FLOSS_CYW43_BARE
+    /* No async_context: the driver's own work (host-wake, bus sleep) runs here. */
+    floss_cyw43_driver_service();
+#endif
     uint32_t now = floss_hal_time_us();
     if (!s_rx_pending && floss_time_diff(now, s_last_read_us) < (int32_t)CYW43_RX_SAFETY_POLL_US) {
         return 0;

@@ -362,9 +362,12 @@ powershell -File tools/pico_flash.ps1 -Uf2 build-pico/floss_link_pad.uf2 -Serial
 
 ## Notes
 
-- The CYW43 driver is used directly (`pico_cyw43_driver` +
-  `pico_async_context_poll`), not through `pico_cyw43_arch`, which would
-  pull in another host stack. The firmware targets define the cyw43
+- The CYW43 driver is used directly, not through `pico_cyw43_arch` (which
+  would pull in another host stack). Default `FLOSS_PICO_BARE=ON`: no
+  async_context, no RTOS, no interrupts - `transport/cyw43/floss_cyw43_bare.c`
+  services the driver inside `floss_poll()`, so the main loop is just
+  `floss_poll()` plus your code. `-DFLOSS_PICO_BARE=OFF` uses the SDK's
+  `pico_cyw43_driver` + `async_context_poll` instead. The firmware targets define the cyw43
   driver's radio-enable option so the combined WLAN + radio firmware is
   loaded (see `CMakeLists.txt`).
 - The flash store holds 16 entries of up to 64 bytes: enough for every

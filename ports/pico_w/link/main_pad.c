@@ -11,7 +11,7 @@
  *          CYW43, FLOSS, address) -> transport from flash -> floss_link_init
  *          -> floss_start
  *
- *   loop:  async_context_poll   CYW43 driver housekeeping (bus IRQ work)
+ *   loop:  (async_context_poll  only with FLOSS_PICO_BARE=OFF)
  *          floss_poll           the whole stack incl. the link's report mailbox
  *          bootsel              BOOTSEL as button 1 (sampled every 50 ms)
  *          pad                  demo + buttons -> input report, published

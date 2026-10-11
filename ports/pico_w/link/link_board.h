@@ -6,7 +6,7 @@
  * firmwares (main_pad.c, main_dongle.c).
  *
  * What both ends have in common: the radio bring-up (exactly as the gamepad
- * firmware's main.c does it: HAL, async context, CYW43 driver, FLOSS with
+ * firmware's main.c does it: HAL, CYW43 driver, FLOSS with
  * the CYW43 transport, public address from the board's WLAN MAC), the
  * link transport choice kept in flash, the LED that follows the link state,
  * the BOOTSEL button and the debug console keys that are not about the link.
@@ -41,7 +41,7 @@ typedef void (*link_board_pump_fn)(void);
  */
 void link_board_init(link_board_pump_fn pump);
 
-/** CYW43 driver housekeeping (async_context_poll). Call every loop iteration. */
+/** CYW43 driver housekeeping: a no-op with the bare glue (driver work runs in floss_poll); async_context_poll otherwise. */
 void link_board_poll_driver(void);
 
 /** This board's radio address (valid after link_board_init). */

@@ -6,17 +6,19 @@
  *
  * Bring-up is the same sequence as the gamepad firmware's main.c:
  *
- *   HAL (flash store, spin lock) -> async context + CYW43 driver ->
+ *   HAL (flash store, spin lock) -> CYW43 driver (bare-metal glue) ->
  *   floss_init (CYW43 transport + chipset quirks) -> address override
  *   (WLAN MAC + 1, so two boards always differ) -> [app] -> floss_start
  *
  * The CYW43 driver is used without pico_cyw43_arch: we own the
- * async_context and only need the shared-bus radio interface.
+ * async_context unless FLOSS_PICO_BARE=OFF; only the shared-bus radio interface is used.
  */
 #include <stdio.h>
 
 #include "pico/stdlib.h"
+#if !FLOSS_CYW43_BARE
 #include "pico/async_context_poll.h"
+#endif
 #include "pico/cyw43_driver.h"
 #include "cyw43.h"
 #include "hardware/sync.h"
@@ -39,7 +41,9 @@
 #define LED_IDLE_BLIP_US   60000u
 #define REBOOT_DELAY_MS    50u
 
+#if !FLOSS_CYW43_BARE
 static async_context_poll_t async_ctx;
+#endif
 static floss_addr_t local_addr;
 static bool snoop_on;
 static link_board_pump_fn board_pump;
@@ -97,12 +101,19 @@ void link_board_init(link_board_pump_fn usb_pump) {
     board_pump = usb_pump;
     floss_pico_hal_init();
 
+#if FLOSS_CYW43_BARE
+    /* Bare-metal radio glue: no async_context, no interrupts (floss_cyw43_bare.c). */
+    if (!floss_cyw43_driver_init()) {
+        link_board_fatal("cyw43 driver init", 0);
+    }
+#else
     if (!async_context_poll_init_with_defaults(&async_ctx)) {
         link_board_fatal("async context init", 0);
     }
     if (!cyw43_driver_init(&async_ctx.core)) {
         link_board_fatal("cyw43 driver init", 0);
     }
+#endif
 
     floss_init_t init = {
         .transport = floss_cyw43_transport(),
@@ -128,7 +139,10 @@ void link_board_init(link_board_pump_fn usb_pump) {
 }
 
 void link_board_poll_driver(void) {
+#if !FLOSS_CYW43_BARE
     async_context_poll(&async_ctx.core);
+#endif
+    /* Bare glue: driver work happens inside floss_poll() (transport poll). */
 }
 
 const floss_addr_t *link_board_addr(void) {

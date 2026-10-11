@@ -259,7 +259,7 @@ loop max us: cyw43 <us> floss <us> bootsel <us> app <us> led <us> console <us>
 ```
 
 The second line is the worst-case time spent in each main-loop section
-since the previous status line (`cyw43` = `async_context_poll`, `floss` =
+since the previous status line (`cyw43` = `async_context_poll`, ~0 with the default bare glue where driver work is inside `floss`; `floss` =
 `floss_poll()`, `bootsel` = BOOTSEL sampling, `app` = the app task, `led`,
 `console`). When `poll_gap` or `timer_lateness` is large, it names the
 section responsible. Both lines are printed only by the Classic firmware's

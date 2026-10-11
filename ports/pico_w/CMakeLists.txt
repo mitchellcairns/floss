@@ -15,6 +15,21 @@ cmake_minimum_required(VERSION 3.13)
 # Log every HCI packet from boot as "SNOOP ..." lines (tools/floss_snoop.py
 # turns them into a capture). Can also be toggled at runtime with 'p'.
 option(FLOSS_PICO_SNOOP "Enable the HCI snoop log hook at boot" OFF)
+option(FLOSS_PICO_BARE "Bare-metal radio glue: no async_context, no interrupts; driver work runs inside floss_poll()" ON)
+
+# Radio driver glue. Bare (default): transport/cyw43/floss_cyw43_bare.c provides
+# the cyw43-driver hooks and is serviced from the transport poll, so the main
+# loop is just floss_poll() + your code. Off: the SDK's pico_cyw43_driver on an
+# async_context_poll (the loop must also call async_context_poll()).
+if(FLOSS_PICO_BARE)
+    set(FLOSS_PICO_DRIVER_LIBS pico_cyw43_driver_headers)
+    set(FLOSS_PICO_DRIVER_SRCS ${CMAKE_CURRENT_LIST_DIR}/../../transport/cyw43/floss_cyw43_bare.c)
+    add_compile_definitions(FLOSS_CYW43_BARE=1)
+else()
+    set(FLOSS_PICO_DRIVER_LIBS pico_cyw43_driver pico_async_context_poll)
+    set(FLOSS_PICO_DRIVER_SRCS)
+    add_compile_definitions(FLOSS_CYW43_BARE=0)
+endif()
 
 if(NOT PICO_BOARD)
     set(PICO_BOARD pico_w CACHE STRING "Board type")
@@ -49,6 +64,7 @@ function(floss_pico_firmware name app_dir app_src app_le)
         main.c
         floss_hal_pico.c
         ${FLOSS_ROOT}/transport/cyw43/floss_cyw43.c
+        ${FLOSS_PICO_DRIVER_SRCS}
         ${app_src}
     )
     # Warnings only for our sources (SDK sources are compiled into this target too).
@@ -56,6 +72,7 @@ function(floss_pico_firmware name app_dir app_src app_le)
         main.c
         floss_hal_pico.c
         ${FLOSS_ROOT}/transport/cyw43/floss_cyw43.c
+        ${FLOSS_PICO_DRIVER_SRCS}
         ${app_src}
         PROPERTIES COMPILE_OPTIONS "${FLOSS_PICO_WARN}")
     target_include_directories(${name} PRIVATE
@@ -75,9 +92,8 @@ function(floss_pico_firmware name app_dir app_src app_le)
     target_link_libraries(${name}
         floss
         pico_stdlib
-        pico_cyw43_driver
+        ${FLOSS_PICO_DRIVER_LIBS}
         cyw43_driver_picow
-        pico_async_context_poll
         pico_unique_id
         hardware_flash
         hardware_sync
@@ -114,6 +130,7 @@ function(floss_pico_link_firmware name main_src)
         link/link_diag.c
         floss_hal_pico.c
         ${FLOSS_ROOT}/transport/cyw43/floss_cyw43.c
+        ${FLOSS_PICO_DRIVER_SRCS}
         ${FLOSS_ROOT}/examples/gamepad/gamepad_state.c
         ${ARG_SOURCES}
     )
@@ -133,9 +150,8 @@ function(floss_pico_link_firmware name main_src)
     target_link_libraries(${name}
         floss
         pico_stdlib
-        pico_cyw43_driver
+        ${FLOSS_PICO_DRIVER_LIBS}
         cyw43_driver_picow
-        pico_async_context_poll
         pico_unique_id
         pico_bootrom
         hardware_flash

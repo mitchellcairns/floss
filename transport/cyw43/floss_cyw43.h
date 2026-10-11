@@ -23,7 +23,20 @@
 extern "C" {
 #endif
 
-/** The transport singleton. cyw43_driver_init() must have been called. */
+/**
+ * Bare-metal driver glue (transport/cyw43/floss_cyw43_bare.c, define
+ * FLOSS_CYW43_BARE=1): initialise the cyw43 driver with no async_context,
+ * no RTOS and no interrupts. Driver work then runs inside the transport's
+ * poll, i.e. inside floss_poll(). Call once before floss_init().
+ */
+bool floss_cyw43_driver_init(void);
+/** Bare glue: run pending driver work now (called by the transport's poll). */
+void floss_cyw43_driver_service(void);
+
+/**
+ * The transport singleton. Either floss_cyw43_driver_init() (bare) or the
+ * SDK's cyw43_driver_init(async_context) must have been called.
+ */
 floss_transport_t *floss_cyw43_transport(void);
 
 /** Chipset quirks: vendor set-address opcode 0xFC01. */
