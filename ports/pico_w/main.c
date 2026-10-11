@@ -174,8 +174,7 @@ static uint16_t tune_flush_ms = GAMEPAD_FLUSH_TIMEOUT_MS;
 static uint32_t tune_interval_us = GAMEPAD_REPORT_INTERVAL_US;
 
 static void tune_print(void) {
-    printf("tune: inflight %u  qos %lu us  flush %u ms  interval %lu us
-", tune_inflight,
+    printf("tune: inflight %u  qos %lu us  flush %u ms  interval %lu us\n", tune_inflight,
            (unsigned long)tune_qos_us, tune_flush_ms, (unsigned long)tune_interval_us);
 }
 
