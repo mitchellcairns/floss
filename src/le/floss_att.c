@@ -35,17 +35,7 @@
 
 #if FLOSS_ENABLE_LE
 
-#if defined(__has_include)
-#if __has_include("floss/floss_smp.h")
 #include "floss/floss_smp.h"
-#define FLOSS_ATT_HAVE_SMP_H 1
-#endif
-#endif
-#ifndef FLOSS_ATT_HAVE_SMP_H
-/* Public SMP API (include/floss/floss_smp.h, written by the SMP module):
- * as peripheral, send a Security Request so the central pairs/encrypts. */
-floss_err_t floss_smp_request_security(uint16_t handle);
-#endif
 
 /* Responses are built in rsp[]; a pool buffer must also fit them + L2CAP. */
 _Static_assert(FLOSS_ATT_MTU >= FLOSS_ATT_DEFAULT_MTU, "FLOSS_ATT_MTU below the ATT minimum");
