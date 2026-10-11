@@ -43,11 +43,14 @@ cmake -G Ninja -S ports/pico_w -B build-pico
 cmake --build build-pico
 ```
 
-Windows (Git Bash or PowerShell) with the VS Code extension's Ninja:
+Windows (Git Bash) with the VS Code extension's SDK, toolchain and tools. The
+prebuilt `pioasm`/`picotool` matter: without them CMake tries to compile them
+with your host compiler, which fails with some clang/MSVC combinations.
 
 ```sh
-export PATH="$HOME/.pico-sdk/ninja/v1.12.1:$PATH"
-cmake -G Ninja -S ports/pico_w -B build-pico
+export PICO_SDK_PATH="$HOME/.pico-sdk/sdk/2.2.0"
+export PATH="$HOME/.pico-sdk/toolchain/14_2_Rel1/bin:$HOME/.pico-sdk/ninja/v1.12.1:$PATH"
+cmake -G Ninja -S ports/pico_w -B build-pico   -Dpioasm_DIR="$HOME/.pico-sdk/tools/2.2.0/pioasm"   -Dpicotool_DIR="$HOME/.pico-sdk/picotool/2.2.0/picotool"
 cmake --build build-pico
 ```
 
@@ -58,7 +61,12 @@ Options:
 | `-DPICO_BOARD=pico2_w`       | Build for the Pico 2 W (RP2350)                          |
 | `-DFLOSS_PICO_SNOOP=ON`      | Log every HCI packet from boot (also toggled with `p`)  |
 
-Output: `build-pico/floss_gamepad.uf2` (and `.elf` for debugging).
+Outputs (and `.elf` files for debugging):
+
+| Firmware | App | What the host sees |
+|---|---|---|
+| `build-pico/floss_gamepad.uf2` | `examples/gamepad` | Classic HID gamepad "FLOSS Gamepad" |
+| `build-pico/floss_le_gamepad.uf2` | `examples/le_gamepad` | LE HID-over-GATT gamepad "FLOSS LE Gamepad" |
 
 ## Flash
 
@@ -70,6 +78,14 @@ picotool load -x build-pico/floss_gamepad.uf2 -f
 ```
 
 (`-f` reboots a running board into BOOTSEL first, `-x` starts the firmware.)
+
+On Windows picotool usually cannot reboot a running board (its reset
+interface needs a WinUSB driver). Use the helper instead, which uses the
+1200-baud reboot request and then shows the console:
+
+```powershell
+powershell -File tools/pico_flash.ps1 -Uf2 build-pico/floss_gamepad.uf2
+```
 
 ## Use
 
