@@ -565,6 +565,41 @@ const floss_sim_gatt_stats_t *floss_sim_gatt_stats(void);
 int floss_sim_sdp_ssa(uint16_t handle, uint16_t uuid16, uint8_t *out, uint16_t cap);
 
 /* ------------------------------------------------------------------------ */
+/* Classic discovery: remote devices answering inquiries                    */
+/* ------------------------------------------------------------------------ */
+/*
+ * While the stack runs HCI Inquiry, every responder (not currently linked)
+ * answers once, in the format Write Inquiry Mode selected (mode 2 + EIR
+ * data = Extended Inquiry Result). Inquiry Complete follows after
+ * Inquiry_Length x 1.28 s of fake time; Inquiry Cancel ends it with only a
+ * Command Complete. A responder is also a present peer (pages succeed).
+ * With no responders registered, Inquiry completes immediately (as before).
+ */
+
+#ifndef FLOSS_SIM_MAX_INQUIRY_RESPONDERS
+#define FLOSS_SIM_MAX_INQUIRY_RESPONDERS 4
+#endif
+
+typedef struct {
+    bool in_use;
+    floss_addr_t addr;
+    uint32_t cod;
+    int8_t rssi;
+    uint16_t clock_offset;   /**< reported clock offset (default 0x1234) */
+    uint8_t eir[240];        /**< EIR structures (zero padded on the air) */
+    uint8_t eir_len;
+} floss_sim_inquiry_responder_t;
+
+/** Add (or replace) a device that answers inquiries. eir may be NULL. */
+floss_sim_inquiry_responder_t *floss_sim_inquiry_add(const floss_addr_t *addr, uint32_t cod, int8_t rssi,
+                                                     const uint8_t *eir, uint8_t eir_len);
+void floss_sim_inquiry_clear(void);
+/** True while an inquiry from the stack runs. */
+bool floss_sim_inquiry_active(void);
+/** HCI Inquiry commands accepted since floss_sim_init(). */
+uint32_t floss_sim_inquiry_count(void);
+
+/* ------------------------------------------------------------------------ */
 /* Raw injection                                                            */
 /* ------------------------------------------------------------------------ */
 

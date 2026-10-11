@@ -10,7 +10,8 @@
  *                        per-link state, connection events, link policy API
  *   floss_gap_security.c pairing / authentication / encryption events
  *   floss_gap_bonds.c    persistent bond database (link keys)
- *   floss_gap_eir.c      Extended Inquiry Response builder
+ *   floss_gap_eir.c      Extended Inquiry Response builder / parser
+ *   floss_gap_inquiry.c  discovering other devices (inquiry, as a central)
  *
  * Nothing here is visible outside src/gap/. Cross-file names use the
  * floss_gap_ prefix like everything else, plus a module noun (link_, sec_,
@@ -124,17 +125,40 @@ void floss_gap_bond_touch(const floss_addr_t *addr);
 #define FLOSS_GAP_EIR_LEN 240u
 /** Max 16-bit service UUIDs advertised in the EIR. */
 #define FLOSS_GAP_EIR_MAX_UUIDS 8u
+/** Max 128-bit service UUIDs advertised in the EIR. */
+#define FLOSS_GAP_EIR_MAX_UUID128 2u
 
 /** Forget registered UUIDs (called by floss_gap_init). */
 void floss_gap_eir_init(void);
 /**
- * Build an EIR block: name (complete, or shortened if it does not fit) then
- * the complete list of 16-bit UUIDs. Writes exactly `cap` bytes (zero padded).
+ * Build an EIR block: name (complete, or shortened if it does not fit), the
+ * complete list of 16-bit UUIDs, then the complete list of 128-bit UUIDs
+ * (uuid128: n_uuid128 x 16 bytes, already in little-endian wire order).
+ * Writes exactly `cap` bytes (zero padded).
  * @return number of significant bytes.
  */
 uint16_t floss_gap_eir_build(uint8_t *out, uint16_t cap, const uint8_t *name, uint16_t name_len,
-                             const uint16_t *uuids, uint8_t n_uuids);
+                             const uint16_t *uuids, uint8_t n_uuids, const uint8_t *uuid128, uint8_t n_uuid128);
 /** Build the current EIR and queue Write Extended Inquiry Response. */
 floss_err_t floss_gap_eir_send(floss_hci_cmd_cb cb, void *ctx);
+
+/* ------------------------------------------------------------------------ */
+/* Inquiry (floss_gap_inquiry.c)                                             */
+/* ------------------------------------------------------------------------ */
+
+/** Reset inquiry state and the page-hint cache (floss_gap_init, controller restart). */
+void floss_gap_inquiry_init(void);
+/**
+ * Handle Inquiry Result (0x02), Inquiry Result with RSSI (0x22), Extended
+ * Inquiry Result (0x2F) and Inquiry Complete (0x01). Returns false if `code`
+ * is none of them.
+ */
+bool floss_gap_inquiry_on_event(uint8_t code, const uint8_t *params, uint8_t len);
+/**
+ * Page parameters learnt from an inquiry answer of addr: page scan
+ * repetition mode and clock offset (bit 15 set = valid, as Create
+ * Connection wants it). false if the device was not seen recently.
+ */
+bool floss_gap_inquiry_page_hint(const floss_addr_t *addr, uint8_t *psrm, uint16_t *clock_offset);
 
 #endif /* FLOSS_GAP_INTERNAL_H */
