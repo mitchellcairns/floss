@@ -752,6 +752,25 @@ static void sdp_send(floss_l2cap_chan_t *chan, uint16_t len)
 }
 
 /**
+ * sdp.tx is about to be rebuilt: a response still waiting in it (BUSY) must
+ * go out first or be dropped, never be sent later with another response's
+ * bytes (possibly to another client).
+ */
+static void sdp_settle_pending(void)
+{
+    floss_l2cap_chan_t *p = sdp.pending;
+    if (p == NULL) {
+        return;
+    }
+    sdp.pending = NULL;
+    sdp_send(p, sdp.pending_len);
+    if (sdp.pending != NULL) {
+        FLOSS_LOGW(SDP, "dropping deferred response on cid 0x%04x", sdp.pending->local_cid);
+        sdp.pending = NULL;
+    }
+}
+
+/**
  * One request in, one response out. Everything the response needs is
  * derived from the request bytes and the record table, so this function has
  * no per-client state.
@@ -762,6 +781,7 @@ static void sdp_on_data(floss_l2cap_chan_t *chan, const uint8_t *data, uint16_t 
     uint16_t err = 0;
     uint16_t plen = 0;
 
+    sdp_settle_pending();
     rq.pdu_id = (len >= 1) ? data[0] : 0;
     rq.tid = (len >= 3) ? floss_get_be16(data + 1) : 0;
     FLOSS_HEXDUMP(SDP, "req", data, len);

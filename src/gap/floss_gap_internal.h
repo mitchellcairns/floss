@@ -63,6 +63,12 @@ floss_gap_link_t *floss_gap_link_by_addr(const floss_addr_t *addr);
 floss_gap_link_t *floss_gap_link_by_handle(uint16_t handle);
 /** Find or allocate the slot for addr. NULL when the table is full. */
 floss_gap_link_t *floss_gap_link_get(const floss_addr_t *addr);
+/**
+ * Link state for a pairing/security event about addr: the existing entry, or
+ * a new one only while HCI has a Classic link (or link attempt) with addr.
+ * Events about unknown devices must not consume the small link table.
+ */
+floss_gap_link_t *floss_gap_link_for_event(const floss_addr_t *addr);
 
 /** HCI handle of a Classic link to addr, or FLOSS_GAP_NO_HANDLE. */
 uint16_t floss_gap_handle_for_addr(const floss_addr_t *addr);

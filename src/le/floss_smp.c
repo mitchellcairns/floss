@@ -61,6 +61,10 @@
 
 #define SMP_CID          0x0006
 #define SMP_TIMEOUT_US   30000000u /* Vol 3 Part H 3.4: 30 s per SMP transaction */
+/* The controller's P-256 key / DHKey work takes well under a second. Past
+ * this, its completion event is presumed lost (a broken controller would
+ * otherwise block LE Secure Connections on every link until reboot). */
+#define SMP_CTRL_TIMEOUT_US 10000000u
 #define SMP_MAX_KEY_SIZE 16
 #define SMP_PASSKEY_MAX  999999u
 #define SMP_PASSKEY_BITS 20        /* SC Passkey Entry: one round per bit */
@@ -243,6 +247,7 @@ enum { PK_NONE = 0, PK_PENDING, PK_READY, PK_FAILED };
 static uint8_t s_pk_state;
 static uint8_t s_local_pk[64];    /* X || Y, wire order */
 static uint16_t s_dhkey_owner;    /* handle whose DHKey the controller computes */
+static floss_timer_t s_ctrl_timer; /* guards the P-256 key and DHKey requests */
 
 /* Association model tables, [initiator IO capability][responder IO capability]
  * (Vol 3 Part H Table 2.8). The two differ only where both sides can show a
@@ -718,6 +723,9 @@ static void smp_pk_request(void) {
         s_pk_state == PK_PENDING) {
         s_pk_state = PK_NONE; /* queue full: retried on the next need */
     }
+    if (s_pk_state == PK_PENDING) {
+        floss_timer_start(&s_ctrl_timer, SMP_CTRL_TIMEOUT_US);
+    }
 }
 
 static void smp_on_p256_complete(const uint8_t *params, uint8_t len) {
@@ -763,6 +771,9 @@ static void smp_dhkey_kick(void) {
             smp_fail(c, FLOSS_SMP_REASON_UNSPECIFIED);
             continue;
         }
+        if (s_dhkey_owner == c->handle) {
+            floss_timer_start(&s_ctrl_timer, SMP_CTRL_TIMEOUT_US);
+        }
         return;
     }
 }
@@ -783,6 +794,19 @@ static void smp_dhkey_done(uint8_t status, const uint8_t *dhkey) {
         }
     }
     smp_dhkey_kick();
+}
+
+/** The controller never answered a P-256 key or DHKey request: give up on it. */
+static void smp_ctrl_timeout(floss_timer_t *t, void *arg) {
+    FLOSS_UNUSED(t);
+    FLOSS_UNUSED(arg);
+    if (s_pk_state == PK_PENDING) {
+        smp_pk_failed();
+    }
+    if (s_dhkey_owner != SMP_HANDLE_NONE) {
+        FLOSS_LOGW(SMP, "SMP: no DHKey from the controller, failing that pairing");
+        smp_dhkey_done(0xFF /* no answer */, NULL);
+    }
 }
 
 static void smp_ltk_reply(uint16_t handle, const uint8_t ltk[16]) {
@@ -1544,6 +1568,7 @@ void floss_smp_init(void) {
     s_local_addr_set = false;
     s_pk_state = PK_NONE;
     s_dhkey_owner = SMP_HANDLE_NONE;
+    floss_timer_init(&s_ctrl_timer, smp_ctrl_timeout, NULL);
     smp_irk_load();
     smp_bonds_load();
 }

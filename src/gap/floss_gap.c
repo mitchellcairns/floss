@@ -52,6 +52,8 @@
 
 /* Bring-up retry when HCI's command queue is momentarily full. */
 #define GAP_READY_RETRY_US          1000u
+/* Retry period for a Write Scan Enable the HCI command queue had no room for. */
+#define GAP_SCAN_RETRY_US           10000u
 
 /** Bring-up steps, in wire order. */
 typedef enum {
@@ -89,6 +91,7 @@ static struct {
     bool applying;   /* bring-up sequence started: setters send directly */
     bool ready;      /* READY emitted */
     floss_timer_t retry_timer;
+    floss_timer_t scan_timer; /* re-sends Write Scan Enable the HCI queue refused */
 
     /* listeners */
     struct {
@@ -186,6 +189,21 @@ floss_gap_link_t *floss_gap_link_get(const floss_addr_t *addr)
     return NULL;
 }
 
+floss_gap_link_t *floss_gap_link_for_event(const floss_addr_t *addr)
+{
+    floss_gap_link_t *l = floss_gap_link_by_addr(addr);
+    if (l) {
+        return l;
+    }
+    for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+        const floss_conn_t *c = floss_hci_conn_at(i);
+        if (c->state != FLOSS_CONN_FREE && !c->le && floss_addr_eq(&c->addr, addr)) {
+            return floss_gap_link_get(addr);
+        }
+    }
+    return NULL;
+}
+
 static void link_free(floss_gap_link_t *l)
 {
     floss_timer_stop(&l->sec_timer);
@@ -268,6 +286,7 @@ static floss_err_t send_name(floss_hci_cmd_cb cb)
 /* ======================================================================== */
 
 static void ready_next(void);
+static void scan_retry(floss_timer_t *t, void *arg);
 
 static void ready_cmd_done(void *ctx, uint16_t opcode, uint8_t status, const uint8_t *ret, uint16_t ret_len)
 {
@@ -399,6 +418,7 @@ void floss_gap_init(void)
     s_gap.pscan_interlaced = true; /* interlaced halves the time a host needs to page us */
     s_gap.default_policy = FLOSS_LINK_POLICY_ROLE_SWITCH | FLOSS_LINK_POLICY_SNIFF;
     floss_timer_init(&s_gap.retry_timer, ready_retry, NULL);
+    floss_timer_init(&s_gap.scan_timer, scan_retry, NULL);
 
     floss_gap_sec_init();
     floss_gap_eir_init();
@@ -439,12 +459,32 @@ floss_err_t floss_gap_set_class(uint32_t cod)
     return s_gap.applying ? send_class(NULL) : FLOSS_OK;
 }
 
+/**
+ * Scan enable is the one setting whose loss is unrecoverable (no host could
+ * ever reach us again), so a write the HCI command queue had no room for
+ * (e.g. while a misbehaving controller floods us) is retried until it fits.
+ */
+static void scan_apply(void)
+{
+    if (s_gap.applying && send_scan_enable(NULL) == FLOSS_ERR_NOMEM) {
+        floss_timer_start(&s_gap.scan_timer, GAP_SCAN_RETRY_US);
+    }
+}
+
+static void scan_retry(floss_timer_t *t, void *arg)
+{
+    FLOSS_UNUSED(t);
+    FLOSS_UNUSED(arg);
+    scan_apply();
+}
+
 floss_err_t floss_gap_set_scan(bool discoverable, bool connectable)
 {
     s_gap.discoverable = discoverable;
     s_gap.connectable = connectable;
     FLOSS_LOGD(GAP, "scan: discoverable=%d connectable=%d", discoverable, connectable);
-    return s_gap.applying ? send_scan_enable(NULL) : FLOSS_OK;
+    scan_apply();
+    return FLOSS_OK;
 }
 
 floss_err_t floss_gap_set_page_scan(uint16_t interval, uint16_t window, bool interlaced)
@@ -804,6 +844,9 @@ static void on_disconnection_complete(const uint8_t *p, uint8_t len)
         return; /* LE link: HCI notifies the LE layer */
     }
     floss_gap_link_t *l = floss_gap_link_by_handle(handle);
+    if (!l && c) {
+        l = floss_gap_link_by_addr(&c->addr); /* entry created before the handle was known */
+    }
     floss_addr_t addr;
     memset(&addr, 0, sizeof(addr));
     if (c) {

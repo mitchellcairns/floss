@@ -727,6 +727,10 @@ static void on_conn_complete(const uint8_t *p, uint8_t len, bool enhanced) {
         return;
     }
 
+    if (floss_le_link_index(handle) >= 0) {
+        FLOSS_LOGE(LE, "le: link 0x%04x already up, duplicate connection event ignored", (unsigned)handle);
+        return;
+    }
     le_slot_t *s = NULL;
     for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
         if (!s_le.links[i].used) {

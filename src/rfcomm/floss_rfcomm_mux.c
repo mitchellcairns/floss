@@ -199,7 +199,10 @@ static floss_err_t send_frame2(floss_rfcomm_mux_t *mux, uint8_t dlci, uint8_t ty
         return FLOSS_OK;
     }
 
-    if (mux->q_count != 0 || total > (uint32_t)mux->chan->remote_mtu) {
+    /* Only when the link can take it right now: these frames answer the peer
+     * (Test/MSC/RLS echoes of its own length), so a peer that floods them
+     * while its link drains slowly must not pin the whole buffer pool. */
+    if (mux->q_count != 0 || total > (uint32_t)mux->chan->remote_mtu || !floss_l2cap_can_send_now(mux->chan)) {
         return FLOSS_ERR_BUSY;
     }
     floss_buf_t *buf = floss_buf_alloc();
@@ -271,7 +274,10 @@ floss_err_t floss_rfcomm_mux_send_pn(floss_rfcomm_mux_t *mux, floss_rfcomm_dlc_t
     v[3] = 0; /* T1: acknowledgement timer, unused by RFCOMM */
     floss_put_le16(&v[4], dlc->mtu);
     v[6] = 0; /* N2: retransmissions, unused */
-    v[7] = (command || dlc->cfc) ? k : 0;
+    /* Initial credits only while the DLC is being set up: a PN answered on an
+     * open DLC must not reset the credit count both sides already track. */
+    bool initial = command || dlc->state == FLOSS_RFCOMM_DLC_NEGOTIATED;
+    v[7] = (initial && (command || dlc->cfc)) ? k : 0;
 
     floss_err_t err = floss_rfcomm_mux_send_mcc(mux, RFC_MCC_PN, command, v, sizeof v);
     if (err == FLOSS_OK && v[7] != 0) {

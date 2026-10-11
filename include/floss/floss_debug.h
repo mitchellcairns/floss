@@ -149,6 +149,7 @@ typedef struct {
     uint32_t cmd_timeouts;      /**< controller never answered a command */
     uint32_t cmd_failures;      /**< command completed with non-zero status */
     uint32_t acl_credit_stalls; /**< wanted to send ACL, controller had no buffers */
+    uint32_t acl_tx_dropped;    /**< PDU refused: link TX queue at FLOSS_ACL_TXQ_MAX */
     uint32_t buf_alloc_failures;/**< pool exhausted -> raise FLOSS_BUF_COUNT */
     uint32_t rx_dropped;        /**< malformed / no room for reassembly */
     floss_hist_t cmd_latency;   /**< command sent -> Complete/Status event */

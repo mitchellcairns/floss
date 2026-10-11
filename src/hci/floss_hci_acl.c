@@ -130,6 +130,13 @@ floss_err_t floss_hci_acl_send(floss_buf_t *buf) {
         floss_buf_free(buf);
         return FLOSS_ERR_INVALID;
     }
+    if (c->txq.count >= FLOSS_ACL_TXQ_MAX) {
+        /* The link is not draining (peer not acknowledging): keep the pool for others. */
+        FLOSS_STAT_INC(acl_tx_dropped);
+        FLOSS_LOGW(HCI, "link 0x%03x: TX queue full (%u), PDU dropped", c->handle, (unsigned)c->txq.count);
+        floss_buf_free(buf);
+        return FLOSS_ERR_BUSY;
+    }
     buf->type = FLOSS_PKT_ACL;
     buf->flags &= (uint8_t)(FLOSS_BUF_F_FLUSHABLE | FLOSS_BUF_F_PRIORITY);
 

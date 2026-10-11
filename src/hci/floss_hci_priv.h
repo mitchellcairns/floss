@@ -37,6 +37,15 @@
 #define FLOSS_LE_SUBEVT_CONN_COMPLETE          0x01
 #define FLOSS_LE_SUBEVT_ENHANCED_CONN_COMPLETE 0x0A
 
+/*
+ * A Classic slot waiting for Connection Complete (page or accepted request)
+ * is failed locally after this long. The controller's own page / accept
+ * timeouts are at most ~41 s, so this only fires if it never reports.
+ */
+#ifndef FLOSS_HCI_CONN_PENDING_TIMEOUT_US
+#define FLOSS_HCI_CONN_PENDING_TIMEOUT_US 60000000u
+#endif
+
 /* Status passed to command callbacks when the controller never answered. */
 #define FLOSS_HCI_STATUS_TIMEOUT 0xFF
 
@@ -78,6 +87,7 @@ typedef struct {
     floss_timer_t cmd_timer;
 
     /* --- links / ACL ----------------------------------------------------- */
+    floss_timer_t pending_timer; /* guards OUTGOING/INCOMING slots */
     floss_conn_t conns[FLOSS_MAX_CONNECTIONS];
     uint16_t acl_credits;      /* free BR/EDR (or shared) controller buffers */
     uint16_t le_credits;       /* free LE buffers when the controller has a separate pool */

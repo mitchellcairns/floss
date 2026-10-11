@@ -512,10 +512,18 @@ static void att_write(att_link_t *L, const uint8_t *p, uint16_t len, bool cmd) {
 static void att_prep_clear(void) {
     s_prep.active = false;
     s_prep.start = s_prep.end = 0;
+    /* Gaps between queued segments are written too: never with stale bytes
+     * from an earlier queue (possibly another link's). */
+    memset(s_prep.data, 0, sizeof(s_prep.data));
 }
 
 static void att_prepare_write(att_link_t *L, const uint8_t *p, uint16_t len) {
     if (len < 5) {
+        att_error(L, p[0], 0, FLOSS_ATT_ERR_INVALID_PDU);
+        return;
+    }
+    if (len > att_mtu(L->conn)) {
+        /* The response echoes the request: it could not fit the client's MTU. */
         att_error(L, p[0], 0, FLOSS_ATT_ERR_INVALID_PDU);
         return;
     }

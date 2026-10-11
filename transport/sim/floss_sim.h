@@ -145,6 +145,9 @@ typedef struct {
     /** Drop events the host has not enabled with Set Event Mask (real controller behaviour). */
     bool enforce_event_mask;
 
+    /** Never deliver this LE Meta subevent (a controller that loses it). 0 = deliver all. */
+    uint8_t drop_le_subevent;
+
     /** Seed of the sim's own PRNG (link keys, numeric comparison values). */
     uint32_t seed;
 

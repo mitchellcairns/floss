@@ -229,6 +229,7 @@ typedef struct {
     bool authenticated;
     bool encrypted;
     bool initiator;          /**< we created the link */
+    uint32_t pending_since_us; /**< OUTGOING/INCOMING: when the slot was created (guard timer) */
 
     /* ACL TX */
     floss_bufq_t txq;        /**< waiting for controller credits */
