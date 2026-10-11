@@ -109,6 +109,11 @@
 #define FLOSS_ENABLE_RFCOMM 1
 #endif
 
+/** Point-to-point pad <-> dongle link profile (floss_link.h). */
+#ifndef FLOSS_ENABLE_LINK
+#define FLOSS_ENABLE_LINK 1
+#endif
+
 /** Max simultaneous RFCOMM data channels (DLCs). */
 #ifndef FLOSS_RFCOMM_MAX_DLC
 #define FLOSS_RFCOMM_MAX_DLC 2
