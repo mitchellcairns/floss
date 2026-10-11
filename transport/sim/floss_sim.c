@@ -36,6 +36,7 @@
  *   8. ACL to the stack
  *   9. public helpers: links, channels, SDP client, LE
  *  10. transport ops and pump helpers
+ *  11. LE central support: remote advertisers (scanning), scripted GATT server
  */
 #include "floss_sim.h"
 
@@ -69,7 +70,12 @@
 #define SIM_OP_LE_GENERATE_DHKEY           FLOSS_OPCODE(0x08, 0x0026)
 #define SIM_OP_LE_READ_RESOLVING_LIST_SIZE FLOSS_OPCODE(0x08, 0x002A)
 #define SIM_OP_LE_READ_MAX_DATA_LENGTH     FLOSS_OPCODE(0x08, 0x002F)
+#define SIM_OP_LE_SET_SCAN_PARAMS          FLOSS_OPCODE(0x08, 0x000B)
+#define SIM_OP_LE_SET_SCAN_ENABLE          FLOSS_OPCODE(0x08, 0x000C)
+#define SIM_OP_LE_SET_PHY                  FLOSS_OPCODE(0x08, 0x0032)
 
+#define SIM_LE_SUB_ADV_REPORT       0x02
+#define SIM_LE_SUB_PHY_UPDATE       0x0C
 #define SIM_LE_SUB_CONN_COMPLETE    0x01
 #define SIM_LE_SUB_CONN_UPDATE      0x03
 #define SIM_LE_SUB_REMOTE_FEATURES  0x04
@@ -161,6 +167,35 @@ typedef struct {
     uint8_t in_data[FLOSS_SIM_INBOX_LEN][FLOSS_SIM_ACL_MAX];
 } sim_chan_t;
 
+/** A remote advertiser (section 11). */
+typedef struct {
+    floss_sim_advertiser_t pub; /* MUST stay first */
+    uint32_t due;               /* next advertising event */
+    bool seen;                  /* reported in this scan session (duplicate filtering) */
+} sim_adv_t;
+
+/** One attribute of the scripted GATT server (section 11). */
+typedef struct {
+    uint16_t handle;
+    uint16_t type16;
+    bool is128;
+    uint8_t type128[16];
+    uint8_t error;
+    uint16_t len;
+    uint8_t value[FLOSS_SIM_GATT_VALUE_MAX];
+} sim_gatt_attr_t;
+
+typedef struct {
+    bool active;
+    bool silent;
+    bool req_pending;           /* a request arrived while silent */
+    uint16_t link;              /* LE link it serves */
+    uint16_t server_mtu;
+    uint8_t count;
+    sim_gatt_attr_t attrs[FLOSS_SIM_GATT_MAX_ATTRS];
+    floss_sim_gatt_stats_t stats;
+} sim_gatt_t;
+
 static struct {
     floss_transport_t transport;
     floss_sim_config_t cfg;
@@ -206,6 +241,11 @@ static struct {
     sim_link_t links[FLOSS_SIM_MAX_LINKS];
     sim_chan_t chans[FLOSS_SIM_MAX_CHANS];
     uint32_t chan_seq;
+
+    /* LE central support (section 11). */
+    floss_sim_le_scan_t le_scan;
+    sim_adv_t advs[FLOSS_SIM_MAX_ADVERTISERS];
+    sim_gatt_t gatt;
 } sim;
 
 /* LMP features page 0: 3/5-slot, encryption, slot offset, timing accuracy,
@@ -680,6 +720,9 @@ static void link_free(sim_link_t *l) {
             c->pub.state = FLOSS_SIM_CHAN_CLOSED;
         }
     }
+    if (sim.gatt.active && sim.gatt.link == l->pub.handle) {
+        sim.gatt.active = false; /* stats stay readable */
+    }
     memset(l, 0, sizeof *l);
 }
 
@@ -716,6 +759,11 @@ static void link_set_open(sim_link_t *l) {
 
 static void controller_reset(void);
 static sim_chan_t *chan_alloc(uint16_t handle, uint16_t psm);
+/* Section 11 (LE central support). */
+static bool sim_le_central_cmd(uint16_t op, const uint8_t *p, uint8_t n);
+static void sim_le_scan_tick(uint32_t now);
+static void sim_gatt_rx(sim_link_t *l, const uint8_t *p, uint16_t n);
+static void sim_gatt_on_remote_tx(uint16_t handle, const uint8_t *p, uint16_t n);
 
 /* ------------------------------------------------------------------------ */
 /* 4. Pairing                                                               */
@@ -1558,6 +1606,11 @@ static bool cmd_le(uint16_t op, const uint8_t *p, uint8_t n) {
 
     case SIM_OP_LE_CREATE_CONNECTION: {
         NEED(25, true);
+        if (sim.le_scan.enabled || sim.le_connecting) {
+            /* Initiating while scanning (or initiating twice) is refused by real controllers. */
+            emit_cs(op, SIM_ERR_COMMAND_DISALLOWED);
+            return true;
+        }
         floss_addr_t a;
         memcpy(a.b, p + 6, 6);
         floss_sim_peer_t *peer = floss_sim_peer_find(&a);
@@ -1645,6 +1698,11 @@ static bool cmd_le(uint16_t op, const uint8_t *p, uint8_t n) {
         emit_w(FLOSS_EVT_LE_META, &w);
         return true;
     }
+
+    case SIM_OP_LE_SET_SCAN_PARAMS:
+    case SIM_OP_LE_SET_SCAN_ENABLE:
+    case SIM_OP_LE_SET_PHY:
+        return sim_le_central_cmd(op, p, n);
 
     default:
         return false;
@@ -1855,6 +1913,8 @@ static void sim_tick(void) {
         }
         sim.stats.nocp_events++;
     }
+
+    sim_le_scan_tick(now);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2270,6 +2330,9 @@ static void l2cap_rx(sim_link_t *l, const uint8_t *pdu, uint16_t len) {
                    (unsigned)c->pub.sim_mtu);
     }
     inbox_push(c, pdu + 4, plen);
+    if (l->pub.le && cid == FLOSS_SIM_CID_ATT) {
+        sim_gatt_rx(l, pdu + 4, plen); /* scripted GATT server, if one serves this link */
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2522,6 +2585,9 @@ static sim_chan_t *fixed_chan(uint16_t handle, uint16_t cid) {
 
 floss_err_t floss_sim_fixed_send(uint16_t handle, uint16_t cid, const uint8_t *data, uint16_t len) {
     sim_chan_t *c = fixed_chan(handle, cid);
+    if (c && cid == FLOSS_SIM_CID_ATT) {
+        sim_gatt_on_remote_tx(handle, data, len); /* a hand-written ATT response settles the request */
+    }
     return c ? floss_sim_l2cap_send(&c->pub, data, len) : FLOSS_ERR_NOT_FOUND;
 }
 
@@ -2681,6 +2747,8 @@ static void controller_reset(void) {
     sim.next_handle = 0x0040;
     sim.next_sim_cid = FLOSS_CID_DYNAMIC_FIRST;
     sim.le_connecting = false;
+    memset(&sim.le_scan, 0, sizeof sim.le_scan);
+    sim.gatt.active = false; /* its link vanished with the others */
 }
 
 static floss_err_t sim_open(floss_transport_t *t) {
@@ -2833,4 +2901,519 @@ bool floss_sim_pump_until(bool (*cond)(void *arg), void *arg, uint32_t max_polls
         floss_sim_pump(1);
     }
     return cond(arg);
+}
+
+/* ------------------------------------------------------------------------ */
+/* 11. LE central support: advertisers, scanning, scripted GATT server      */
+/* ------------------------------------------------------------------------ */
+
+/* ATT opcodes the scripted server speaks */
+#define SIM_ATT_ERROR_RSP      0x01
+#define SIM_ATT_MTU_REQ        0x02
+#define SIM_ATT_MTU_RSP        0x03
+#define SIM_ATT_FIND_INFO_REQ  0x04
+#define SIM_ATT_FIND_INFO_RSP  0x05
+#define SIM_ATT_READ_TYPE_REQ  0x08
+#define SIM_ATT_READ_TYPE_RSP  0x09
+#define SIM_ATT_READ_REQ       0x0A
+#define SIM_ATT_READ_RSP       0x0B
+#define SIM_ATT_WRITE_REQ      0x12
+#define SIM_ATT_WRITE_RSP      0x13
+#define SIM_ATT_NOTIFY         0x1B
+#define SIM_ATT_INDICATE       0x1D
+#define SIM_ATT_CONFIRM        0x1E
+#define SIM_ATT_WRITE_CMD      0x52
+#define SIM_ATT_CMD_FLAG       0x40
+#define SIM_ATT_DEFAULT_MTU    23
+
+#define SIM_ATT_ERR_INVALID_HANDLE  0x01
+#define SIM_ATT_ERR_INVALID_PDU     0x04
+#define SIM_ATT_ERR_NOT_SUPPORTED   0x06
+#define SIM_ATT_ERR_NOT_FOUND       0x0A
+#define SIM_ATT_ERR_INVALID_LEN     0x0D
+
+/** PHY picked for one direction of LE Set PHY: 2M when allowed, else 1M; Coded only when it is the only choice. */
+static uint8_t sim_pick_phy(bool no_pref, uint8_t phys) {
+    if (no_pref || phys == 0) {
+        return 1;
+    }
+    if (phys & 0x02) {
+        return 2;
+    }
+    return (phys & 0x01) ? 1 : 3;
+}
+
+/** LE Set Scan Parameters / Set Scan Enable / Set PHY. */
+static bool sim_le_central_cmd(uint16_t op, const uint8_t *p, uint8_t n) {
+    sim_w_t w = {.n = 0};
+    switch (op) {
+    case SIM_OP_LE_SET_SCAN_PARAMS: {
+        NEED(7, false);
+        uint16_t interval = floss_get_le16(p + 1);
+        uint16_t window = floss_get_le16(p + 3);
+        if (sim.le_scan.enabled) {
+            emit_cc_status(op, SIM_ERR_COMMAND_DISALLOWED); /* parameters are fixed while scanning */
+            return true;
+        }
+        if (p[0] > 1 || interval < 4 || interval > 0x4000 || window < 4 || window > interval || p[5] > 3 ||
+            p[6] > 3) {
+            emit_cc_status(op, SIM_ERR_INVALID_PARAMS);
+            return true;
+        }
+        sim.le_scan.active = p[0] == 1;
+        sim.le_scan.interval = interval;
+        sim.le_scan.window = window;
+        sim.le_scan.own_addr_type = p[5];
+        sim.le_scan.filter_policy = p[6];
+        emit_cc_status(op, 0);
+        return true;
+    }
+    case SIM_OP_LE_SET_SCAN_ENABLE: {
+        NEED(2, false);
+        if (p[0] > 1 || p[1] > 1) {
+            emit_cc_status(op, SIM_ERR_INVALID_PARAMS);
+            return true;
+        }
+        if (p[0] && sim.le_connecting) {
+            emit_cc_status(op, SIM_ERR_COMMAND_DISALLOWED);
+            return true;
+        }
+        if (p[0] && !sim.le_scan.enabled) {
+            uint32_t now = floss_hal_time_us();
+            for (unsigned i = 0; i < FLOSS_SIM_MAX_ADVERTISERS; i++) {
+                sim.advs[i].due = now; /* first advertising event at the next tick */
+                sim.advs[i].seen = false;
+            }
+        }
+        sim.le_scan.enabled = p[0] == 1;
+        sim.le_scan.filter_duplicates = p[0] == 1 && p[1] == 1;
+        FLOSS_LOGI(TRANSPORT, "sim: LE scanning %s", sim.le_scan.enabled ? "on" : "off");
+        emit_cc_status(op, 0);
+        return true;
+    }
+    case SIM_OP_LE_SET_PHY: {
+        NEED(7, true);
+        sim_link_t *l = link_open(floss_get_le16(p) & 0x0FFF);
+        if (!l || !l->pub.le) {
+            emit_cs(op, FLOSS_HCI_ERR_UNKNOWN_CONN_ID);
+            return true;
+        }
+        emit_cs(op, 0);
+        w_u8(&w, SIM_LE_SUB_PHY_UPDATE);
+        w_u8(&w, 0);
+        w_u16(&w, l->pub.handle);
+        w_u8(&w, sim_pick_phy((p[2] & 0x01) != 0, p[3]));
+        w_u8(&w, sim_pick_phy((p[2] & 0x02) != 0, p[4]));
+        emit_w(FLOSS_EVT_LE_META, &w);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+/** One LE Advertising Report carrying a single report. */
+static void sim_adv_report(sim_adv_t *a, uint8_t evt_type, const uint8_t *data, uint8_t len) {
+    sim_w_t w = {.n = 0};
+    w_u8(&w, SIM_LE_SUB_ADV_REPORT);
+    w_u8(&w, 1); /* Num_Reports */
+    w_u8(&w, evt_type);
+    w_u8(&w, a->pub.addr_type);
+    w_addr(&w, &a->pub.addr);
+    w_u8(&w, len);
+    w_bytes(&w, data, len);
+    w_u8(&w, (uint8_t)a->pub.rssi);
+    emit_w(FLOSS_EVT_LE_META, &w);
+    a->pub.reports++;
+}
+
+/** Legacy connectable advertising ends when a link is created: is the advertiser connected to us? */
+static bool sim_adv_connected(const sim_adv_t *a) {
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_LINKS; i++) {
+        const sim_link_t *l = &sim.links[i];
+        if (l->pub.state == FLOSS_SIM_LINK_OPEN && l->pub.le && floss_addr_eq(&l->pub.addr, &a->pub.addr)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** While the host scans: every advertiser that is due sends its report (and a scan response when active). */
+static void sim_le_scan_tick(uint32_t now) {
+    if (!sim.le_scan.enabled) {
+        return;
+    }
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_ADVERTISERS; i++) {
+        sim_adv_t *a = &sim.advs[i];
+        if (!a->pub.in_use || floss_time_diff(now, a->due) < 0 || sim_adv_connected(a)) {
+            continue;
+        }
+        a->due = now + (a->pub.interval_us ? a->pub.interval_us : 30000u);
+        if (sim.le_scan.filter_duplicates && a->seen) {
+            continue;
+        }
+        a->seen = true;
+        sim_adv_report(a, a->pub.evt_type, a->pub.adv, a->pub.adv_len);
+        bool scannable = a->pub.evt_type == 0x00 || a->pub.evt_type == 0x02;
+        if (sim.le_scan.active && scannable && a->pub.rsp_len) {
+            sim_adv_report(a, 0x04 /* SCAN_RSP */, a->pub.rsp, a->pub.rsp_len);
+        }
+    }
+}
+
+floss_sim_advertiser_t *floss_sim_le_advertiser_add(const floss_addr_t *addr, uint8_t addr_type, const uint8_t *adv,
+                                                    uint8_t adv_len, const uint8_t *rsp, uint8_t rsp_len) {
+    sim_adv_t *a = NULL;
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_ADVERTISERS && !a; i++) {
+        if (sim.advs[i].pub.in_use && floss_addr_eq(&sim.advs[i].pub.addr, addr)) {
+            a = &sim.advs[i];
+        }
+    }
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_ADVERTISERS && !a; i++) {
+        if (!sim.advs[i].pub.in_use) {
+            a = &sim.advs[i];
+        }
+    }
+    if (!a) {
+        FLOSS_LOGE(TRANSPORT, "sim: no free advertiser (FLOSS_SIM_MAX_ADVERTISERS)");
+        return NULL;
+    }
+    memset(a, 0, sizeof *a);
+    a->pub.in_use = true;
+    a->pub.addr = *addr;
+    a->pub.addr_type = addr_type;
+    a->pub.evt_type = 0x00;
+    a->pub.rssi = -50;
+    a->pub.interval_us = 30000u;
+    a->pub.adv_len = (uint8_t)FLOSS_MIN(adv_len, sizeof a->pub.adv);
+    if (adv && a->pub.adv_len) {
+        memcpy(a->pub.adv, adv, a->pub.adv_len);
+    }
+    a->pub.rsp_len = (uint8_t)FLOSS_MIN(rsp_len, sizeof a->pub.rsp);
+    if (rsp && a->pub.rsp_len) {
+        memcpy(a->pub.rsp, rsp, a->pub.rsp_len);
+    }
+    a->due = floss_hal_time_us();
+    floss_sim_peer_add(addr, 0); /* present: LE Create Connection to it succeeds */
+    return &a->pub;
+}
+
+void floss_sim_le_advertiser_remove(const floss_addr_t *addr) {
+    for (unsigned i = 0; i < FLOSS_SIM_MAX_ADVERTISERS; i++) {
+        if (sim.advs[i].pub.in_use && floss_addr_eq(&sim.advs[i].pub.addr, addr)) {
+            sim.advs[i].pub.in_use = false;
+        }
+    }
+}
+
+const floss_sim_le_scan_t *floss_sim_le_scan(void) {
+    return &sim.le_scan;
+}
+
+bool floss_sim_le_initiating(void) {
+    return sim.le_connecting;
+}
+
+/* ---- scripted GATT server -------------------------------------------- */
+
+static uint16_t sim_gatt_mtu(void) {
+    return sim.gatt.stats.mtu ? sim.gatt.stats.mtu : SIM_ATT_DEFAULT_MTU;
+}
+
+static void sim_gatt_send(const uint8_t *pdu, uint16_t len) {
+    (void)floss_sim_fixed_send(sim.gatt.link, FLOSS_SIM_CID_ATT, pdu, len);
+}
+
+static void sim_gatt_error(uint8_t req, uint16_t handle, uint8_t err) {
+    uint8_t e[5] = {SIM_ATT_ERROR_RSP, req, (uint8_t)handle, (uint8_t)(handle >> 8), err};
+    sim.gatt.stats.errors_sent++;
+    sim_gatt_send(e, sizeof e);
+}
+
+static sim_gatt_attr_t *sim_gatt_attr(uint16_t handle) {
+    for (unsigned i = 0; i < sim.gatt.count; i++) {
+        if (sim.gatt.attrs[i].handle == handle) {
+            return &sim.gatt.attrs[i];
+        }
+    }
+    return NULL;
+}
+
+/* Find Information: (handle, type) pairs of one format, as many as fit. */
+static void sim_gatt_find_info(const uint8_t *p, uint16_t n) {
+    if (n != 5) {
+        sim_gatt_error(p[0], 0, SIM_ATT_ERR_INVALID_PDU);
+        return;
+    }
+    uint16_t start = floss_get_le16(p + 1), end = floss_get_le16(p + 3);
+    if (start == 0 || start > end) {
+        sim_gatt_error(p[0], start, SIM_ATT_ERR_INVALID_HANDLE);
+        return;
+    }
+    uint8_t rsp[FLOSS_SIM_ACL_MAX];
+    uint16_t mtu = sim_gatt_mtu(), pos = 2;
+    uint8_t fmt = 0;
+    for (unsigned i = 0; i < sim.gatt.count; i++) {
+        const sim_gatt_attr_t *a = &sim.gatt.attrs[i];
+        if (a->handle < start || a->handle > end) {
+            continue;
+        }
+        uint8_t f = a->is128 ? 2 : 1;
+        uint16_t entry = f == 1 ? 4 : 18;
+        if ((fmt && f != fmt) || pos + entry > mtu) {
+            break;
+        }
+        fmt = f;
+        floss_put_le16(rsp + pos, a->handle);
+        if (f == 1) {
+            floss_put_le16(rsp + pos + 2, a->type16);
+        } else {
+            memcpy(rsp + pos + 2, a->type128, 16);
+        }
+        pos = (uint16_t)(pos + entry);
+    }
+    if (!fmt) {
+        sim_gatt_error(p[0], start, SIM_ATT_ERR_NOT_FOUND);
+        return;
+    }
+    rsp[0] = SIM_ATT_FIND_INFO_RSP;
+    rsp[1] = fmt;
+    sim_gatt_send(rsp, pos);
+}
+
+/* Read By Type: (handle, value) pairs of equal length, as many as fit. */
+static void sim_gatt_read_by_type(const uint8_t *p, uint16_t n) {
+    if (n != 7 && n != 21) {
+        sim_gatt_error(p[0], 0, SIM_ATT_ERR_INVALID_PDU);
+        return;
+    }
+    uint16_t start = floss_get_le16(p + 1), end = floss_get_le16(p + 3);
+    if (start == 0 || start > end) {
+        sim_gatt_error(p[0], start, SIM_ATT_ERR_INVALID_HANDLE);
+        return;
+    }
+    uint8_t rsp[FLOSS_SIM_ACL_MAX];
+    uint16_t mtu = sim_gatt_mtu(), pos = 2, entry = 0;
+    for (unsigned i = 0; i < sim.gatt.count; i++) {
+        const sim_gatt_attr_t *a = &sim.gatt.attrs[i];
+        bool match = n == 7 ? (!a->is128 && a->type16 == floss_get_le16(p + 5))
+                            : (a->is128 && memcmp(a->type128, p + 5, 16) == 0);
+        if (a->handle < start || a->handle > end || !match) {
+            continue;
+        }
+        if (a->error) {
+            if (entry == 0) {
+                sim_gatt_error(p[0], a->handle, a->error);
+                return;
+            }
+            break;
+        }
+        uint16_t vlen = FLOSS_MIN(a->len, (uint16_t)(mtu - 4));
+        if (entry == 0) {
+            entry = (uint16_t)(2 + vlen);
+        } else if (entry != 2 + vlen) {
+            break;
+        }
+        if (pos + entry > mtu) {
+            break;
+        }
+        floss_put_le16(rsp + pos, a->handle);
+        memcpy(rsp + pos + 2, a->value, vlen);
+        pos = (uint16_t)(pos + entry);
+    }
+    if (entry == 0) {
+        sim_gatt_error(p[0], start, SIM_ATT_ERR_NOT_FOUND);
+        return;
+    }
+    rsp[0] = SIM_ATT_READ_TYPE_RSP;
+    rsp[1] = (uint8_t)entry;
+    sim_gatt_send(rsp, pos);
+}
+
+/** Write Request (cmd = false) or Write Command. Returns the ATT error, 0 = applied. */
+static uint8_t sim_gatt_write(const uint8_t *p, uint16_t n, bool cmd) {
+    if (n < 3) {
+        return SIM_ATT_ERR_INVALID_PDU;
+    }
+    uint16_t h = floss_get_le16(p + 1);
+    sim_gatt_attr_t *a = sim_gatt_attr(h);
+    if (!a) {
+        return SIM_ATT_ERR_INVALID_HANDLE;
+    }
+    if (a->error) {
+        return a->error;
+    }
+    if (n - 3 > FLOSS_SIM_GATT_VALUE_MAX) {
+        return SIM_ATT_ERR_INVALID_LEN;
+    }
+    a->len = (uint16_t)(n - 3);
+    memcpy(a->value, p + 3, a->len);
+    sim.gatt.stats.last_write_handle = h;
+    if (cmd) {
+        sim.gatt.stats.write_cmds++;
+    } else {
+        sim.gatt.stats.writes++;
+    }
+    return 0;
+}
+
+/** An ATT PDU from the stack on the served link. */
+static void sim_gatt_rx(sim_link_t *l, const uint8_t *p, uint16_t n) {
+    if (!sim.gatt.active || l->pub.handle != sim.gatt.link || n == 0) {
+        return;
+    }
+    uint8_t op = p[0];
+    if (op == SIM_ATT_CONFIRM) {
+        sim.gatt.stats.confirmations++;
+        return;
+    }
+    bool cmd = (op & SIM_ATT_CMD_FLAG) != 0;
+    bool req = !cmd && (op & 1) == 0;
+    if (!req && !cmd) {
+        return; /* responses / notifications from the stack's own server: inbox only */
+    }
+    if (req) {
+        sim.gatt.stats.requests++;
+        if (sim.gatt.req_pending) {
+            sim.gatt.stats.pipelined++;
+        }
+        if (sim.gatt.silent) {
+            sim.gatt.req_pending = true;
+            return;
+        }
+    }
+    uint8_t rsp[FLOSS_SIM_ACL_MAX];
+    switch (op) {
+    case SIM_ATT_MTU_REQ: {
+        if (n != 3) {
+            sim_gatt_error(op, 0, SIM_ATT_ERR_INVALID_PDU);
+            break;
+        }
+        uint16_t mtu = FLOSS_MIN(floss_get_le16(p + 1), sim.gatt.server_mtu);
+        rsp[0] = SIM_ATT_MTU_RSP;
+        floss_put_le16(rsp + 1, sim.gatt.server_mtu);
+        sim_gatt_send(rsp, 3); /* still at the old MTU */
+        sim.gatt.stats.mtu = FLOSS_MAX(mtu, (uint16_t)SIM_ATT_DEFAULT_MTU);
+        break;
+    }
+    case SIM_ATT_FIND_INFO_REQ:
+        sim_gatt_find_info(p, n);
+        break;
+    case SIM_ATT_READ_TYPE_REQ:
+        sim_gatt_read_by_type(p, n);
+        break;
+    case SIM_ATT_READ_REQ: {
+        sim_gatt_attr_t *a = n == 3 ? sim_gatt_attr(floss_get_le16(p + 1)) : NULL;
+        if (n != 3) {
+            sim_gatt_error(op, 0, SIM_ATT_ERR_INVALID_PDU);
+        } else if (!a) {
+            sim_gatt_error(op, floss_get_le16(p + 1), SIM_ATT_ERR_INVALID_HANDLE);
+        } else if (a->error) {
+            sim_gatt_error(op, a->handle, a->error);
+        } else {
+            uint16_t len = FLOSS_MIN(a->len, (uint16_t)(sim_gatt_mtu() - 1));
+            rsp[0] = SIM_ATT_READ_RSP;
+            memcpy(rsp + 1, a->value, len);
+            sim_gatt_send(rsp, (uint16_t)(1 + len));
+        }
+        break;
+    }
+    case SIM_ATT_WRITE_REQ: {
+        uint8_t err = sim_gatt_write(p, n, false);
+        if (err) {
+            sim_gatt_error(op, n >= 3 ? floss_get_le16(p + 1) : 0, err);
+        } else {
+            rsp[0] = SIM_ATT_WRITE_RSP;
+            sim_gatt_send(rsp, 1);
+        }
+        break;
+    }
+    case SIM_ATT_WRITE_CMD:
+        (void)sim_gatt_write(p, n, true);
+        break;
+    default:
+        if (req) {
+            sim_gatt_error(op, 0, SIM_ATT_ERR_NOT_SUPPORTED);
+        }
+        break;
+    }
+}
+
+floss_err_t floss_sim_gatt_serve(uint16_t handle, const floss_sim_gatt_attr_t *attrs, uint8_t count,
+                                 uint16_t server_mtu) {
+    sim_link_t *l = link_open(handle);
+    if (!l || !l->pub.le) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    if ((count && !attrs) || count > FLOSS_SIM_GATT_MAX_ATTRS) {
+        return FLOSS_ERR_INVALID;
+    }
+    for (unsigned i = 1; i < count; i++) {
+        if (attrs[i].handle <= attrs[i - 1].handle) {
+            return FLOSS_ERR_INVALID; /* the table must be sorted by handle */
+        }
+    }
+    memset(&sim.gatt, 0, sizeof sim.gatt);
+    for (unsigned i = 0; i < count; i++) {
+        sim_gatt_attr_t *a = &sim.gatt.attrs[i];
+        a->handle = attrs[i].handle;
+        a->type16 = attrs[i].type16;
+        a->is128 = attrs[i].type128 != NULL;
+        if (a->is128) {
+            memcpy(a->type128, attrs[i].type128, 16);
+        }
+        a->error = attrs[i].error;
+        a->len = FLOSS_MIN(attrs[i].len, (uint16_t)FLOSS_SIM_GATT_VALUE_MAX);
+        if (attrs[i].value && a->len) {
+            memcpy(a->value, attrs[i].value, a->len);
+        }
+    }
+    sim.gatt.count = count;
+    sim.gatt.link = handle;
+    sim.gatt.server_mtu = server_mtu < SIM_ATT_DEFAULT_MTU ? SIM_ATT_DEFAULT_MTU : server_mtu;
+    sim.gatt.active = true;
+    return FLOSS_OK;
+}
+
+/** Any ATT response the remote sends on the served link (scripted or by the test) answers the pending request. */
+static void sim_gatt_on_remote_tx(uint16_t handle, const uint8_t *p, uint16_t n) {
+    if (sim.gatt.link == handle && n > 0 && (p[0] & 1) && p[0] != SIM_ATT_NOTIFY && p[0] != SIM_ATT_INDICATE) {
+        sim.gatt.req_pending = false;
+    }
+}
+
+void floss_sim_gatt_silence(bool silent) {
+    sim.gatt.silent = silent;
+    if (!silent) {
+        sim.gatt.req_pending = false;
+    }
+}
+
+int floss_sim_gatt_value(uint16_t attr_handle, uint8_t *out, uint16_t cap) {
+    const sim_gatt_attr_t *a = sim_gatt_attr(attr_handle);
+    if (!a) {
+        return -1;
+    }
+    memcpy(out, a->value, FLOSS_MIN(a->len, cap));
+    return a->len;
+}
+
+floss_err_t floss_sim_gatt_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len, bool indicate) {
+    if (!sim.gatt.active) {
+        return FLOSS_ERR_STATE;
+    }
+    if (len + 3u > sim_gatt_mtu() || (len && !data)) {
+        return FLOSS_ERR_INVALID;
+    }
+    uint8_t pdu[FLOSS_SIM_ACL_MAX];
+    pdu[0] = indicate ? SIM_ATT_INDICATE : SIM_ATT_NOTIFY;
+    floss_put_le16(pdu + 1, attr_handle);
+    if (len) {
+        memcpy(pdu + 3, data, len);
+    }
+    return floss_sim_fixed_send(sim.gatt.link, FLOSS_SIM_CID_ATT, pdu, (uint16_t)(3 + len));
+}
+
+const floss_sim_gatt_stats_t *floss_sim_gatt_stats(void) {
+    return &sim.gatt.stats;
 }

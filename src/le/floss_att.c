@@ -36,6 +36,7 @@
 #if FLOSS_ENABLE_LE
 
 #include "floss/floss_smp.h"
+#include "floss_gatt_client.h" /* GATT client hook */
 
 /* Responses are built in rsp[]; a pool buffer must also fit them + L2CAP. */
 _Static_assert(FLOSS_ATT_MTU >= FLOSS_ATT_DEFAULT_MTU, "FLOSS_ATT_MTU below the ATT minimum");
@@ -610,6 +611,12 @@ static bool att_is_unsolicited(uint8_t op) {
 }
 
 void floss_att_on_pdu(uint16_t conn, const uint8_t *pdu, uint16_t len) {
+    /* --- GATT client hook: server->client PDUs (responses, notifications,
+     * indications) belong to floss_gatt_client.c, not to this server. --- */
+    if (floss_gattc_on_pdu(conn, pdu, len)) {
+        return;
+    }
+    /* --- end GATT client hook --- */
     att_link_t *L = att_link(conn);
     if (L == NULL || len == 0) {
         return;

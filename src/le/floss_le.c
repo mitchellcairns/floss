@@ -39,6 +39,7 @@
 #include "floss/floss_le.h"
 #include "floss/floss_gatt.h"
 #include "floss/floss_hogp.h"
+#include "floss_gatt_client.h" /* central role + GATT client hooks */
 
 #if FLOSS_ENABLE_LE
 
@@ -952,6 +953,7 @@ void floss_le_init(void) {
     floss_att_init();
     floss_gatt_services_register_core();
     floss_hogp_reset();
+    floss_le_central_init(); /* central-role hook: scanner, initiator, GATT client */
     /* floss_smp_init() is called by floss_init() right after this. */
 }
 
@@ -963,6 +965,12 @@ void floss_le_on_hci_ready(void) {
 }
 
 void floss_le_on_hci_event(uint8_t subevent, const uint8_t *params, uint8_t len) {
+    /* --- central-role hook: advertising reports are consumed there; connection
+     * complete is only observed (ends our own attempt) and handled below. --- */
+    if (floss_le_central_on_le_event(subevent, params, len)) {
+        return;
+    }
+    /* --- end central-role hook --- */
     switch (subevent) {
     case FLOSS_LE_SUBEVT_CONN_COMPLETE:
         on_conn_complete(params, len, false);
@@ -1077,6 +1085,7 @@ void floss_le_on_link_down(uint16_t handle, uint8_t reason) {
     floss_timer_stop(&s->update_timer);
     floss_smp_on_link_down(handle);
     floss_att_on_link_down(handle);
+    floss_gattc_on_link_down(handle); /* GATT client hook: outstanding procedure -> 0xFF */
     floss_gatt_on_link_down((uint8_t)idx);
     floss_hogp_on_link_down(handle, reason);
     emit_link_evt(FLOSS_LE_EVT_DISCONNECTED, s, reason);

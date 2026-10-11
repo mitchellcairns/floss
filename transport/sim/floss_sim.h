@@ -445,6 +445,114 @@ static inline int floss_sim_att_recv(uint16_t handle, uint8_t *out, uint16_t cap
 }
 
 /* ------------------------------------------------------------------------ */
+/* LE central support: remote advertisers                                   */
+/* ------------------------------------------------------------------------ */
+/*
+ * Remote devices that advertise. While the host has scanning enabled (LE Set
+ * Scan Enable) the sim emits one LE Advertising Report per advertiser and
+ * advertising interval (plus a SCAN_RSP report when the scan is active and
+ * the advertiser has scan response data); with duplicate filtering only the
+ * first ones per scan session. Like a real controller the sim refuses LE Set
+ * Scan Parameters while scanning and LE Create Connection while scanning or
+ * already initiating (Command Disallowed). An advertiser is also a present
+ * peer, so LE Create Connection to it completes at once with role central;
+ * while that LE link is open it does not advertise.
+ */
+
+#ifndef FLOSS_SIM_MAX_ADVERTISERS
+#define FLOSS_SIM_MAX_ADVERTISERS 4
+#endif
+
+typedef struct {
+    bool in_use;
+    floss_addr_t addr;
+    uint8_t addr_type;      /**< 0 public, 1 random */
+    uint8_t evt_type;       /**< legacy PDU: 0 ADV_IND (default), 2 ADV_SCAN_IND, 3 ADV_NONCONN_IND */
+    int8_t rssi;            /**< reported RSSI (default -50 dBm) */
+    uint32_t interval_us;   /**< advertising interval (default 30 ms) */
+    uint8_t adv[31];
+    uint8_t adv_len;
+    uint8_t rsp[31];        /**< scan response data (sent to active scanners), may be empty */
+    uint8_t rsp_len;
+    uint32_t reports;       /**< LE Advertising Reports generated for it */
+} floss_sim_advertiser_t;
+
+/** Start advertising from a remote device (data lengths clamp to 31). Fields may be tuned afterwards. */
+floss_sim_advertiser_t *floss_sim_le_advertiser_add(const floss_addr_t *addr, uint8_t addr_type, const uint8_t *adv,
+                                                    uint8_t adv_len, const uint8_t *rsp, uint8_t rsp_len);
+/** Stop advertising from that address. */
+void floss_sim_le_advertiser_remove(const floss_addr_t *addr);
+
+/** Scanner state as configured by the host. */
+typedef struct {
+    bool enabled;
+    bool filter_duplicates;
+    bool active;            /**< LE_Scan_Type 1 */
+    uint16_t interval;
+    uint16_t window;
+    uint8_t own_addr_type;
+    uint8_t filter_policy;
+} floss_sim_le_scan_t;
+
+const floss_sim_le_scan_t *floss_sim_le_scan(void);
+/** True while an LE Create Connection from the stack is pending (peer not present yet). */
+bool floss_sim_le_initiating(void);
+
+/* ------------------------------------------------------------------------ */
+/* LE central support: scripted GATT server on the remote side              */
+/* ------------------------------------------------------------------------ */
+/*
+ * One attribute table the remote serves on one LE link, so the stack's GATT
+ * client can be driven through real ATT exchanges. The sim answers Exchange
+ * MTU, Find Information, Read By Type, Read, Write Request and applies Write
+ * Command; other requests get Request Not Supported. Responses follow the
+ * ATT rules (equal-length pairs, MTU-bounded), so small MTUs split discovery
+ * into several rounds. Every ATT PDU from the stack also still lands in the
+ * link's ATT inbox (floss_sim_att_recv) for byte-exact checks.
+ */
+
+#ifndef FLOSS_SIM_GATT_MAX_ATTRS
+#define FLOSS_SIM_GATT_MAX_ATTRS 24
+#endif
+#ifndef FLOSS_SIM_GATT_VALUE_MAX
+#define FLOSS_SIM_GATT_VALUE_MAX 32
+#endif
+
+typedef struct {
+    uint16_t handle;          /**< ascending order */
+    uint16_t type16;          /**< 16-bit attribute type (when type128 is NULL) */
+    const uint8_t *type128;   /**< 128-bit type, 16 bytes little-endian (copied), or NULL */
+    const uint8_t *value;     /**< initial value (copied, up to FLOSS_SIM_GATT_VALUE_MAX) */
+    uint16_t len;
+    uint8_t error;            /**< non-zero: every read/write of it fails with this ATT error */
+} floss_sim_gatt_attr_t;
+
+typedef struct {
+    uint32_t requests;        /**< ATT requests received */
+    uint32_t writes;          /**< Write Requests applied */
+    uint32_t write_cmds;      /**< Write Commands applied */
+    uint32_t confirmations;   /**< Handle Value Confirmations received */
+    uint32_t errors_sent;     /**< Error Responses sent */
+    uint32_t pipelined;       /**< a request arrived while one was unanswered (stack bug: expect 0) */
+    uint16_t mtu;             /**< ATT MTU after Exchange MTU (23 before) */
+    uint16_t last_write_handle;
+} floss_sim_gatt_stats_t;
+
+/** Serve `attrs` on LE link `handle` (copied). server_mtu: Rx MTU the server announces. */
+floss_err_t floss_sim_gatt_serve(uint16_t handle, const floss_sim_gatt_attr_t *attrs, uint8_t count,
+                                 uint16_t server_mtu);
+/**
+ * Stop answering requests (the stack's transaction then times out, or the
+ * test answers by hand with floss_sim_att_send); commands still apply.
+ */
+void floss_sim_gatt_silence(bool silent);
+/** Current value of an attribute (after writes): length, or -1 if unknown. */
+int floss_sim_gatt_value(uint16_t attr_handle, uint8_t *out, uint16_t cap);
+/** Server-initiated Handle Value Notification (indicate = false) or Indication. */
+floss_err_t floss_sim_gatt_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len, bool indicate);
+const floss_sim_gatt_stats_t *floss_sim_gatt_stats(void);
+
+/* ------------------------------------------------------------------------ */
 /* SDP client                                                               */
 /* ------------------------------------------------------------------------ */
 
