@@ -26,6 +26,7 @@ if(EXISTS "${FLOSS_GAMEPAD_DIR}/gamepad_app.c" AND EXISTS "${FLOSS_GAMEPAD_DIR}/
     add_executable(floss_gamepad_host
         main_gamepad.c
         "${FLOSS_GAMEPAD_DIR}/gamepad_app.c"
+        "${FLOSS_GAMEPAD_DIR}/gamepad_state.c"
     )
     target_include_directories(floss_gamepad_host PRIVATE "${FLOSS_GAMEPAD_DIR}")
     # floss needs the HAL and the HAL lives in floss_port_posix: list the port

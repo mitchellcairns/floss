@@ -6,7 +6,7 @@ Host-side helpers for debugging and measuring FLOSS.
 |---|---|---|
 | `floss_snoop.py` | Python 3 (standard library) | Converts `SNOOP` log lines into a `.btsnoop` file for Wireshark |
 | `floss_monitor.py` | Python 3 + [pyserial](https://pypi.org/project/pyserial/) (`python -m pip install pyserial`) | Serial console: shows and saves the log, captures HCI live, sends keys |
-| `pico_flash.ps1` | Windows PowerShell | Flashes a running Pico W via the 1200-baud bootloader request, then shows its console |
+| `pico_flash.ps1` | Windows PowerShell | Flashes a running Pico W via the 1200-baud bootloader request, then shows its console; picks one of several boards by USB serial |
 | `hostprobe/` | Windows 10+, .NET SDK | `floss_hostprobe`: pair/scan helpers and host-side report timing analysis; `experiment.ps1` automates latency experiments |
 
 ## Getting HCI packets into the log
@@ -94,18 +94,28 @@ Other options: `-b/--baud` (ignored by USB CDC ports) and `--rtscts`.
 
 ```powershell
 powershell -File tools/pico_flash.ps1 -Uf2 build-pico/floss_gamepad.uf2 [-ReadMs 8000]
+powershell -File tools/pico_flash.ps1 -List
+powershell -File tools/pico_flash.ps1 -Uf2 <file.uf2> -Serial <usb serial substring> | -Port COMx
 ```
 
-1. Finds the board's USB serial port (USB vendor ID 0x2E8A) and opens it at
-   1200 baud: the Pico SDK's USB stdio reboots into the ROM bootloader.
-2. Waits for the `RPI-RP2` drive and copies the `.uf2` (flash + restart).
-3. Waits for the serial port to come back and prints the console for
-   `-ReadMs` ms (0 = skip).
+1. Finds the board's USB serial port (Raspberry Pi vendor ID 0x2E8A, or the
+   link dongle's 0x1209:0x0F11) and opens it at 1200 baud: the firmware
+   reboots into the ROM bootloader.
+2. Waits for the `RPI-RP2` (Pico 2 W: `RP2350`) drive and copies the `.uf2`
+   (flash + restart).
+3. Waits for the same board's serial port to come back and prints the
+   console for `-ReadMs` ms (0 = skip).
+
+Several boards: `-List` prints each board's COM port and USB serial number
+(the flash unique ID, identical under every FLOSS firmware); `-Serial` or
+`-Port` selects the board to flash and is required when more than one is
+connected. The script refuses when a board is already in BOOTSEL mode or two
+bootloader drives appear, instead of guessing which one to flash. Details:
+[ports/pico_w/README.md](../ports/pico_w/README.md#two-boards-on-one-pc).
 
 Needed because picotool cannot reset a running board on a stock Windows
 install (no WinUSB driver on the reset interface). If no drive appears, hold
-BOOTSEL while plugging in and retry. The script only recognises the
-`RPI-RP2` label (Pico W), not the Pico 2 W's `RP2350`.
+BOOTSEL while plugging in and retry.
 
 ## hostprobe/: measure report timing from the host (Windows)
 
