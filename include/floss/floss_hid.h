@@ -113,6 +113,19 @@ typedef struct {
      * power). Hosts may impose their own.
      */
     uint16_t sniff_max_interval;
+    /**
+     * Max input reports handed to the controller but not yet acknowledged
+     * (0 = as many as the controller has buffers). Keeping this small (1-2)
+     * is the single most important latency setting: reports queued inside the
+     * controller cannot be replaced by newer state, so each one in the queue
+     * adds a full air-interface round of delay. Default 2.
+     */
+    uint8_t max_inflight;
+    /**
+     * If non-zero, request this poll latency from the host after connecting
+     * (floss_gap_qos_setup). 1250 us asks for polling every 2 slots. Default 0.
+     */
+    uint32_t qos_latency_us;
 } floss_hid_config_t;
 
 /** Fill a config with gamepad-friendly defaults (name/descriptor still required). */
@@ -179,6 +192,9 @@ static inline bool floss_hid_connected(void) {
 uint8_t floss_hid_protocol(void);
 /** ACL handle of the host link (0xFFFF if none). */
 uint16_t floss_hid_handle(void);
+
+/** Change the in-flight cap at runtime (see floss_hid_config_t.max_inflight). */
+void floss_hid_set_max_inflight(uint8_t max_inflight);
 
 /** Change pacing at runtime (e.g. host asked for a different rate). */
 void floss_hid_set_report_interval(uint32_t interval_us);

@@ -291,6 +291,8 @@ floss_err_t gamepad_app_init(void) {
 
     app_cfg.report_interval_us = GAMEPAD_REPORT_INTERVAL_US;
     app_cfg.flush_timeout_ms = GAMEPAD_FLUSH_TIMEOUT_MS;
+    app_cfg.max_inflight = GAMEPAD_MAX_INFLIGHT;
+    app_cfg.qos_latency_us = GAMEPAD_QOS_LATENCY_US;
 
     app_in.hat = GAMEPAD_HAT_CENTERED;
     memset(&app_out, 0, sizeof(app_out));

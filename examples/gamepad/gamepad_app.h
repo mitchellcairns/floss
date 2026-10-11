@@ -59,6 +59,16 @@ extern "C" {
 #define GAMEPAD_FLUSH_TIMEOUT_MS 0
 #endif
 
+/** Max input reports queued in the controller (see floss_hid_config_t.max_inflight). */
+#ifndef GAMEPAD_MAX_INFLIGHT
+#define GAMEPAD_MAX_INFLIGHT 2
+#endif
+
+/** Poll latency requested from the host after connecting, us (0 = don't ask). */
+#ifndef GAMEPAD_QOS_LATENCY_US
+#define GAMEPAD_QOS_LATENCY_US 1250
+#endif
+
 /** Start with the demo animation enabled. */
 #ifndef GAMEPAD_DEMO
 #define GAMEPAD_DEMO 1

@@ -624,6 +624,25 @@ floss_err_t floss_gap_set_flush_timeout(uint16_t handle, uint16_t ms)
     return send_u16x2(FLOSS_HCI_WRITE_AUTOMATIC_FLUSH_TIMEOUT, handle, (uint16_t)slots, NULL);
 }
 
+floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate)
+{
+    if (!classic_conn(handle)) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    /* Connection_Handle(2) Unused(1) Service_Type(1) Token_Rate(4)
+     * Peak_Bandwidth(4) Latency(4) Delay_Variation(4). */
+    uint8_t p[20];
+    floss_put_le16(&p[0], handle);
+    p[2] = 0x00;
+    p[3] = 0x02; /* guaranteed */
+    floss_put_le32(&p[4], token_rate);
+    floss_put_le32(&p[8], 0);        /* peak bandwidth: not specified */
+    floss_put_le32(&p[12], latency_us);
+    floss_put_le32(&p[16], 0xFFFFFFFFu); /* delay variation: don't care */
+    FLOSS_LOGI(GAP, "QoS setup handle 0x%03X latency %lu us", handle, (unsigned long)latency_us);
+    return floss_hci_cmd(FLOSS_HCI_QOS_SETUP, p, sizeof(p), NULL, NULL);
+}
+
 floss_err_t floss_gap_switch_role(uint16_t handle, uint8_t role)
 {
     floss_conn_t *c = classic_conn(handle);

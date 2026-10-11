@@ -163,6 +163,53 @@ static void print_banner(void) {
     print_help();
 }
 
+#if !FLOSS_PICO_APP_LE
+/*
+ * Latency tuning knobs, adjustable live from the console so their effect on
+ * the host-side report timing can be measured without reflashing.
+ */
+static uint8_t tune_inflight = GAMEPAD_MAX_INFLIGHT;
+static uint32_t tune_qos_us = GAMEPAD_QOS_LATENCY_US;
+static uint16_t tune_flush_ms = GAMEPAD_FLUSH_TIMEOUT_MS;
+static uint32_t tune_interval_us = GAMEPAD_REPORT_INTERVAL_US;
+
+static void tune_print(void) {
+    printf("tune: inflight %u  qos %lu us  flush %u ms  interval %lu us
+", tune_inflight,
+           (unsigned long)tune_qos_us, tune_flush_ms, (unsigned long)tune_interval_us);
+}
+
+static bool tune_key(int c) {
+    static const uint32_t qos_steps[] = {625, 1250, 2500, 5000};
+    static const uint16_t flush_steps[] = {0, 2, 3, 5, 10, 20};
+    static const uint32_t interval_steps[] = {1000, 1250, 2000, 4000, 8000, 0};
+    uint16_t h = floss_hid_handle();
+    if (c >= '0' && c <= '8') {
+        tune_inflight = (uint8_t)(c - '0');
+        floss_hid_set_max_inflight(tune_inflight);
+    } else if (c == 'Q') {
+        unsigned i = 0;
+        while (i < FLOSS_ARRAY_SIZE(qos_steps) && qos_steps[i] != tune_qos_us) i++;
+        tune_qos_us = qos_steps[(i + 1) % FLOSS_ARRAY_SIZE(qos_steps)];
+        if (h != 0xFFFFu) floss_gap_qos_setup(h, tune_qos_us, 0);
+    } else if (c == 'F') {
+        unsigned i = 0;
+        while (i < FLOSS_ARRAY_SIZE(flush_steps) && flush_steps[i] != tune_flush_ms) i++;
+        tune_flush_ms = flush_steps[(i + 1) % FLOSS_ARRAY_SIZE(flush_steps)];
+        if (h != 0xFFFFu) floss_gap_set_flush_timeout(h, tune_flush_ms);
+    } else if (c == 'I') {
+        unsigned i = 0;
+        while (i < FLOSS_ARRAY_SIZE(interval_steps) && interval_steps[i] != tune_interval_us) i++;
+        tune_interval_us = interval_steps[(i + 1) % FLOSS_ARRAY_SIZE(interval_steps)];
+        floss_hid_set_report_interval(tune_interval_us);
+    } else if (c != 'm') {
+        return false;
+    }
+    tune_print();
+    return true;
+}
+#endif
+
 static void console_task(uint32_t now) {
     /* Polling USB CDC costs a few microseconds; 100 Hz is plenty for keys. */
     static uint32_t next;
@@ -174,6 +221,11 @@ static void console_task(uint32_t now) {
     if (c == PICO_ERROR_TIMEOUT || c < 0) {
         return;
     }
+#if !FLOSS_PICO_APP_LE
+    if (tune_key(c)) {
+        return;
+    }
+#endif
     switch (c) {
     case 's':
         floss_stats_dump();

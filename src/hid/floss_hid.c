@@ -237,6 +237,7 @@ static struct {
     uint32_t due_mask;        /**< paced: slots this tick still has to send */
     uint32_t force_mask;      /**< slots to send once regardless of change (new session) */
     bool defer_counted;       /**< hid_send_deferred already counted for this wait */
+    uint8_t max_inflight;     /**< runtime copy of cfg->max_inflight */
     bool have_last_send;
     uint32_t last_send_us;
 
@@ -456,6 +457,25 @@ floss_err_t floss_hid_set_input(uint8_t report_id, const uint8_t *data, uint16_t
 /* Input transmission (stack context)                                       */
 /* ------------------------------------------------------------------------ */
 
+/*
+ * May an input report go to the controller right now? Besides a free credit
+ * (L2CAP/HCI), cap what is in flight on our link: a report sitting in the
+ * controller's queue can no longer be superseded by newer state, so a deep
+ * queue turns directly into input latency.
+ */
+static bool hid_link_ready(void) {
+    if (!floss_l2cap_can_send_now(hid.intr)) {
+        return false;
+    }
+    if (hid.max_inflight) {
+        const floss_conn_t *c = floss_hci_conn_by_handle(hid.handle);
+        if (c && c->inflight >= hid.max_inflight) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void hid_note_deferred(void) {
     if (!hid.defer_counted) {
         hid.defer_counted = true;
@@ -558,7 +578,7 @@ static void hid_input_service(void) {
         if (!(want & bit)) {
             continue;
         }
-        if (!floss_l2cap_can_send_now(hid.intr)) {
+        if (!hid_link_ready()) {
             /* Link saturated: keep the rest due; the newest data goes out
              * when a credit returns (on_can_send / next poll). */
             hid_note_deferred();
@@ -653,6 +673,11 @@ floss_err_t floss_hid_send_input_now(uint8_t report_id, const uint8_t *data, uin
         hid_note_sent(now);
     }
     return err;
+}
+
+void floss_hid_set_max_inflight(uint8_t max_inflight) {
+    hid.max_inflight = max_inflight;
+    hid_pending = 1;
 }
 
 void floss_hid_set_report_interval(uint32_t interval_us) {
@@ -984,6 +1009,9 @@ static void hid_session_up(void) {
         uint16_t max = hid.cfg->sniff_max_interval;
         uint16_t min = (uint16_t)((max / 2u) & ~1u); /* sniff intervals are even slot counts */
         floss_gap_sniff(hid.handle, min ? min : max, max, 1, 0);
+    }
+    if (hid.cfg->qos_latency_us) {
+        floss_gap_qos_setup(hid.handle, hid.cfg->qos_latency_us, 0);
     }
     floss_gap_set_scan(false, FLOSS_HID_CONNECTABLE_WHILE_CONNECTED);
 
@@ -1489,6 +1517,8 @@ void floss_hid_config_defaults(floss_hid_config_t *cfg) {
     cfg->auto_discoverable = true;
     cfg->auto_reconnect = true;
     cfg->sniff_max_interval = 0;
+    cfg->max_inflight = 2;
+    cfg->qos_latency_us = 0;
 }
 
 floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callbacks_t *cb) {
@@ -1509,6 +1539,7 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     hid.handle = HID_NO_HANDLE;
     hid.protocol = FLOSS_HID_PROTOCOL_REPORT;
     hid.interval_us = cfg->report_interval_us;
+    hid.max_inflight = cfg->max_inflight;
     hid.uses_report_ids = hid_descriptor_uses_ids(cfg->report_descriptor, cfg->report_descriptor_len);
     floss_timer_init(&hid.tick_timer, hid_tick, NULL);
     floss_timer_init(&hid.reconnect_timer, hid_reconnect_timeout, NULL);

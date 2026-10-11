@@ -206,6 +206,15 @@ floss_err_t floss_gap_set_supervision_timeout(uint16_t handle, uint16_t slots);
  */
 floss_err_t floss_gap_set_flush_timeout(uint16_t handle, uint16_t ms);
 
+/**
+ * Ask the link for a quality of service (HCI QoS Setup, guaranteed service).
+ * The controller negotiates with the central, which sets the poll interval
+ * (how often it gives us a transmit opportunity) from latency_us. This is how
+ * a peripheral asks a host for ~1 ms polling instead of the default ~25 ms.
+ * token_rate in bytes/s (0 = let the controller choose).
+ */
+floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate);
+
 /** Request a role switch (0 = become central, 1 = become peripheral). */
 floss_err_t floss_gap_switch_role(uint16_t handle, uint8_t role);
 
