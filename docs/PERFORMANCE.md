@@ -173,6 +173,57 @@ reports/s measured, 800/s ceiling) while LE is bounded by the connection
 interval the host grants (15 ms here). For lowest latency use Classic; LE is
 for hosts or power budgets that require it.
 
+## Pico W to Pico W (pad -> FLOSS dongle -> USB)
+
+`floss_link_pad` streams to `floss_link_dongle`, which presents a USB HID
+gamepad (1 ms USB polling). The dongle is the Classic central and does no
+background scanning, so this path beats a PC's own radio.
+
+### The periodic ~25 ms gaps, and the fix
+
+With two CYW43439 radios, the link went silent for 25-27 ms about once a
+second: two strictly periodic schedules (every 4.000 s, and every ~3 s with
+a slowly shrinking period), both re-phased whenever the link reconnected.
+How it was pinned down:
+
+| Step | Result |
+|---|---|
+| Gap catcher on the dongle (`g`: freeze + print the stack trace ring at the next gap) | host loop running, no HCI traffic at all: the controller simply delivered nothing |
+| HCI command/event census on both boards during gaps | zero commands, no events but packet completions |
+| SDK bus path instead of the fast path; role switch; host channel map | gaps unchanged |
+| Reboot only the pad, log gaps against the dongle's clock | both series re-phase with the new connection: scheduled per link inside the controller |
+| Gap length | 24.8 ms = 79 channels x 312.5 us: a full channel sweep |
+| HCI Read/Write AFH Channel Assessment Mode | (first attempt used swapped opcodes; Read = 0x0C48, Write = 0x0C49) assessment was on, map 63-67 of 79 channels |
+| **Assessment off on both radios** | **0 gaps >= 8 ms; max radio interval 3.8 ms** |
+
+Root cause: the controller's channel assessment for adaptive frequency
+hopping. Turning it off entirely would also stop avoiding busy channels, so
+the link uses **assess-then-freeze** (`floss_link_config_t.classic_afh =
+FLOSS_LINK_AFH_FREEZE`, default): after connecting the dongle assesses for
+`classic_afh_learn_ms` (4 s), reads the hopping map, gives it back to its
+controller as the host channel classification (bad channels stay excluded)
+and turns assessment off; the pad never assesses. `floss_link_afh_relearn()`
+(dongle console `L`) or `classic_afh_refresh_s` re-learn. The HID device
+also keeps its own assessment off by default (`floss_hid_config_t.afh_assessment`).
+
+### Results (60 s, measured on Windows through the dongle's USB gamepad)
+
+| | Before | Assess-then-freeze |
+|---|---|---|
+| Delivered | 758-777/s | **789/s** (800/s is the Classic ceiling) |
+| Host inter-arrival p50 / p99 | 1.00 / 3.0 ms | **1.00 / 2.12 ms** |
+| Latency jitter p99 / max | 3.7 / 36 ms | **3.08 / 6.46 ms** |
+| Radio-side worst interval (dongle) | 26-27.5 ms | **3.8-6.3 ms** |
+
+The few remaining host-side holes (<= 20 ms, irregular, 0.2/s) happen after
+the dongle has already handed the report to USB (its USB wait stays <= 2 ms),
+i.e. inside the PC's input stack.
+
+LE between the same two boards: 7.5 ms interval, 133 reports/s, no
+periodic holes (LE has no peripheral channel sweeps), worst radio interval
+14.9 ms (one missed event). Classic with frozen AFH is now both faster and
+as clean.
+
 ## Reproduce
 
 ```powershell

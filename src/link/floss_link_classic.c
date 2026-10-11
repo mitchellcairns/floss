@@ -73,6 +73,10 @@ static struct {
 
     floss_timer_t close_timer; /**< channel closed but the link stayed: drop it */
 
+    /* adaptive hopping: dongle learn-then-freeze (FLOSS_LINK_AFH_FREEZE) */
+    floss_timer_t afh_timer;
+    bool afh_learning;
+
     /* pad idle power */
     floss_timer_t idle_timer;
     uint32_t last_change_us;
@@ -318,6 +322,97 @@ static void retry_fired(floss_timer_t *t, void *arg) {
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* Adaptive hopping without periodic scans                                  */
+/* ------------------------------------------------------------------------ */
+/*
+ * Measured on two CYW43439 radios: with controller channel assessment on,
+ * the link goes silent for ~25 ms every few seconds (two independent
+ * schedules, ~4 s and ~3 s) while the radio measures all 79 channels.
+ * Turning assessment off removes the gaps (max report interval 3.8 ms) but
+ * then the link also hops onto channels that are busy (e.g. Wi-Fi).
+ *
+ * FREEZE gets both: the dongle (central) assesses for a short window after
+ * connecting, reads the resulting hopping map, gives it back to its
+ * controller as the host classification (bad channels stay excluded) and
+ * turns assessment off. The pad never assesses. Re-learning can be
+ * periodic (classic_afh_refresh_s) or on demand (floss_link_afh_relearn).
+ */
+static const uint8_t k_all_channels[10] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F};
+
+static unsigned afh_count(const uint8_t map[10]) {
+    unsigned n = 0;
+    for (int i = 0; i < 10; i++) {
+        for (uint8_t b = map[i]; b; b &= (uint8_t)(b - 1u)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/** Controller-wide setting applied whenever the controller (re)starts. */
+static void afh_apply_rest(void) {
+    if (cfg()->classic_afh == FLOSS_LINK_AFH_CONTROLLER) {
+        return; /* leave the controller default alone */
+    }
+    floss_gap_set_afh_assessment(false);
+    floss_gap_set_afh_host_channels(k_all_channels);
+}
+
+static void afh_start_learning(void) {
+    if (is_pad() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE || C.handle == CL_NO_HANDLE) {
+        return;
+    }
+    C.afh_learning = true;
+    floss_gap_set_afh_host_channels(k_all_channels); /* forget the old map: re-admit recovered channels */
+    floss_gap_set_afh_assessment(true);
+    floss_timer_start(&C.afh_timer, cfg()->classic_afh_learn_ms * 1000u);
+    FLOSS_LOGI(LINK, "AFH: learning channels for %lu ms", (unsigned long)cfg()->classic_afh_learn_ms);
+}
+
+static void afh_on_map(uint16_t handle, uint8_t status, uint8_t afh_mode, const uint8_t map[10], void *user) {
+    FLOSS_UNUSED(user);
+    if (handle != C.handle) {
+        return; /* link changed meanwhile */
+    }
+    unsigned n = status == 0 ? afh_count(map) : 0u;
+    /* Keep the learned map only if hopping was on and enough channels remain. */
+    floss_gap_set_afh_host_channels(status == 0 && afh_mode == 1 && n >= 20 ? map : k_all_channels);
+    floss_gap_set_afh_assessment(false);
+    C.afh_learning = false;
+    FLOSS_LOGI(LINK, "AFH: frozen on %u of 79 channels, assessment off", n >= 20 ? n : 79u);
+    if (cfg()->classic_afh_refresh_s) {
+        floss_timer_start(&C.afh_timer, cfg()->classic_afh_refresh_s * 1000000u);
+    }
+}
+
+static void afh_fired(floss_timer_t *t, void *arg) {
+    FLOSS_UNUSED(t);
+    FLOSS_UNUSED(arg);
+    if (C.handle == CL_NO_HANDLE) {
+        return;
+    }
+    if (C.afh_learning) {
+        if (floss_gap_read_afh_map(C.handle, afh_on_map, NULL) != FLOSS_OK) {
+            floss_timer_start(&C.afh_timer, 100000u); /* command queue busy: try again shortly */
+        }
+    } else {
+        afh_start_learning(); /* periodic refresh */
+    }
+}
+
+floss_err_t floss_link_afh_relearn(void) {
+    if (is_pad() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE) {
+        return FLOSS_ERR_STATE;
+    }
+    if (C.handle == CL_NO_HANDLE) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    floss_timer_stop(&C.afh_timer);
+    afh_start_learning();
+    return FLOSS_OK;
+}
+
 /** Fresh link to a pad: tune it, secure it, open the data channel. */
 static void dongle_link_up(uint16_t handle, const floss_addr_t *addr) {
     C.handle = handle;
@@ -332,6 +427,7 @@ static void dongle_link_up(uint16_t handle, const floss_addr_t *addr) {
         floss_gap_qos_setup(handle, cfg()->classic_poll_us, 0);
     }
     floss_gap_set_supervision_timeout(handle, FLOSS_LINK_CLASSIC_SUPERVISION_SLOTS);
+    afh_start_learning();
 
     floss_gap_authenticate(handle); /* SSP just works; L2CAP also waits for encryption */
     floss_l2cap_chan_t *ch = NULL;
@@ -467,6 +563,8 @@ static void close_fired(floss_timer_t *t, void *arg) {
 /* ------------------------------------------------------------------------ */
 
 static void link_down(uint8_t reason) {
+    floss_timer_stop(&C.afh_timer);
+    C.afh_learning = false;
     floss_timer_stop(&C.close_timer);
     floss_timer_stop(&C.idle_timer);
     C.handle = CL_NO_HANDLE;
@@ -555,6 +653,7 @@ static floss_err_t cl_init(void) {
     floss_timer_init(&C.retry_timer, retry_fired, NULL);
     floss_timer_init(&C.close_timer, close_fired, NULL);
     floss_timer_init(&C.idle_timer, idle_fired, NULL);
+    floss_timer_init(&C.afh_timer, afh_fired, NULL);
 
     floss_err_t err = FLOSS_OK;
     if (is_pad()) {
@@ -578,6 +677,9 @@ static floss_err_t cl_init(void) {
 
 static void cl_on_ready(void) {
     /* A (re)started controller has no links, pages or inquiries. */
+    afh_apply_rest();
+    floss_timer_stop(&C.afh_timer);
+    C.afh_learning = false;
     floss_timer_stop(&C.retry_timer);
     floss_timer_stop(&C.close_timer);
     floss_timer_stop(&C.idle_timer);

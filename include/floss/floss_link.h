@@ -112,6 +112,21 @@ typedef struct {
     uint32_t classic_idle_ms;
     /** Power: sniff interval (slots) used while idle. Default 16 (10 ms). */
     uint16_t classic_idle_sniff_slots;
+    /**
+     * Adaptive hopping policy (see docs/PERFORMANCE.md, "periodic gaps"):
+     *  FLOSS_LINK_AFH_FREEZE (default): the dongle lets its controller assess
+     *    channels for classic_afh_learn_ms after connecting, then hands the
+     *    learned map back as the host classification and turns assessment off;
+     *    the pad never assesses. Bad channels stay avoided, no periodic scans.
+     *  FLOSS_LINK_AFH_CONTROLLER: controller default (continuous assessment:
+     *    ~25 ms report gaps every few seconds on the CYW43439).
+     *  FLOSS_LINK_AFH_ALL_CHANNELS: no assessment at all, hop on all 79.
+     */
+    uint8_t classic_afh;
+    /** FREEZE: learning window after each connection (ms). Default 4000. */
+    uint32_t classic_afh_learn_ms;
+    /** FREEZE: re-learn this often (s), 0 = only at connection. Default 0. */
+    uint32_t classic_afh_refresh_s;
 
     /* --- LE ------------------------------------------------------------- */
     /** Connection interval min/max requested by the dongle (1.25 ms units). Default 6/6 (7.5 ms). */
@@ -130,6 +145,11 @@ typedef struct {
     /** Reconnect to the bonded peer automatically at start and after a drop. Default true. */
     bool auto_reconnect;
 } floss_link_config_t;
+
+/** classic_afh values. */
+#define FLOSS_LINK_AFH_FREEZE       0
+#define FLOSS_LINK_AFH_CONTROLLER   1
+#define FLOSS_LINK_AFH_ALL_CHANNELS 2
 
 /** report_interval_us value for LE: one report per connection event. */
 #define FLOSS_LINK_INTERVAL_CONN 1u
@@ -177,6 +197,9 @@ floss_err_t floss_link_init(const floss_link_config_t *cfg, const floss_link_cal
  * and bond with the first one found (matching cfg->name).
  */
 floss_err_t floss_link_pair(void);
+
+/** Dongle, Classic, FREEZE policy: run a new channel-learning window now. */
+floss_err_t floss_link_afh_relearn(void);
 
 /** Forget the bonded peer and disconnect. */
 floss_err_t floss_link_forget(void);

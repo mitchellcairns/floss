@@ -47,6 +47,7 @@
 #include "floss/floss.h"
 #include "floss/floss_link.h"
 #include "link_board.h"
+#include "link_diag.h"
 #include "link_meter.h"
 #include "usb_gamepad.h"
 #include "usb_stdio.h"
@@ -217,7 +218,7 @@ static void console_task(uint32_t now) {
     if (c == PICO_ERROR_TIMEOUT || c < 0) {
         return;
     }
-    if (link_board_debug_key(c)) {
+    if (link_diag_key(c) || link_board_debug_key(c)) {
         return;
     }
     floss_err_t err;
@@ -249,6 +250,9 @@ static void console_task(uint32_t now) {
         }
         break;
     }
+    case 'L':
+        printf("AFH relearn: %s\n", floss_err_str(floss_link_afh_relearn()));
+        break;
     case 'G':
         gap_log_all = !gap_log_all;
         printf("gap log %s\n", gap_log_all ? "on" : "off");
@@ -438,6 +442,7 @@ int main(void) {
         t = prof_mark(PROF_APP, t);
 
         link_board_led_task(now);
+        link_diag_task(now);
         t = prof_mark(PROF_LED, t);
         console_task(now);
         prof_mark(PROF_CONSOLE, t);

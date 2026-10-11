@@ -996,6 +996,9 @@ void floss_link_config_defaults(floss_link_config_t *cfg, floss_link_role_t role
     cfg->classic_poll_us = 1250;      /* one poll per slot pair: 800 Hz */
     cfg->classic_idle_ms = 0;
     cfg->classic_idle_sniff_slots = 16; /* 10 ms */
+    cfg->classic_afh = FLOSS_LINK_AFH_FREEZE;
+    cfg->classic_afh_learn_ms = 4000;
+    cfg->classic_afh_refresh_s = 0;
     cfg->le_interval_min = 6;         /* 7.5 ms */
     cfg->le_interval_max = 6;
     cfg->le_peripheral_latency = 0;

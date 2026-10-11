@@ -196,6 +196,13 @@ typedef struct {
      * (floss_gap_qos_setup). 1250 us asks for polling every 2 slots. Default 0.
      */
     uint32_t qos_latency_us;
+    /**
+     * Let our controller run adaptive-hopping channel assessment. As a
+     * peripheral the device only assesses to report to the host, and on the
+     * CYW43439 each assessment leaves the link for ~25 ms (periodic report
+     * gaps). The host keeps assessing on its own. Default false.
+     */
+    bool afh_assessment;
 } floss_hid_config_t;
 
 /** Fill a config with gamepad-friendly defaults (name/descriptor still required). */

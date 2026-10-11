@@ -273,6 +273,32 @@ floss_err_t floss_gap_set_flush_timeout(uint16_t handle, uint16_t ms);
  */
 floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate);
 
+/* ------------------------------------------------------------------------ */
+/* Adaptive frequency hopping (Classic)                                     */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Controller channel assessment on/off (HCI Write AFH Channel Assessment
+ * Mode). While on, a controller periodically measures every channel to
+ * classify interference. On the CYW43439 each measurement leaves the link
+ * for ~25 ms (79 channels x 312.5 us) every few seconds: visible as report
+ * gaps on a latency-critical link. See docs/PERFORMANCE.md.
+ */
+floss_err_t floss_gap_set_afh_assessment(bool enabled);
+
+/**
+ * Host channel classification (HCI Set AFH Host Channel Classification):
+ * 79-bit map, bit n = channel n; 1 = usable/unknown, 0 = bad. Applies to
+ * links where we are central. At least 20 channels must stay usable.
+ */
+floss_err_t floss_gap_set_afh_host_channels(const uint8_t map[10]);
+
+/** Result of floss_gap_read_afh_map: map bit n = channel n in use. */
+typedef void (*floss_gap_afh_map_fn)(uint16_t handle, uint8_t status, uint8_t afh_mode, const uint8_t map[10],
+                                     void *user);
+/** Read the hopping map a link uses right now (HCI Read AFH Channel Map). */
+floss_err_t floss_gap_read_afh_map(uint16_t handle, floss_gap_afh_map_fn fn, void *user);
+
 /** Request a role switch (0 = become central, 1 = become peripheral). */
 floss_err_t floss_gap_switch_role(uint16_t handle, uint8_t role);
 

@@ -1724,6 +1724,9 @@ static void hid_gap_event(const floss_gap_evt_t *evt, void *user) {
     (void)user;
     switch (evt->type) {
     case FLOSS_GAP_EVT_READY:
+        if (!hid.cfg->afh_assessment) {
+            floss_gap_set_afh_assessment(false); /* no periodic channel scans: see floss_hid_config_t */
+        }
         hid_on_ready();
         break;
     case FLOSS_GAP_EVT_CONNECTED:
@@ -1764,6 +1767,7 @@ void floss_hid_config_defaults(floss_hid_config_t *cfg) {
     cfg->sniff_max_interval = 0;
     cfg->max_inflight = 2;
     cfg->qos_latency_us = 0;
+    cfg->afh_assessment = false;
 }
 
 floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callbacks_t *cb) {

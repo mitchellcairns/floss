@@ -42,6 +42,7 @@
 #include "floss/floss_link.h"
 #include "gamepad_state.h"
 #include "link_board.h"
+#include "link_diag.h"
 
 /** Enter pairing by itself when nothing is bonded (checked once after boot). */
 #ifndef LINK_PAD_AUTO_PAIR
@@ -188,7 +189,7 @@ static void console_task(uint32_t now) {
     if (c == PICO_ERROR_TIMEOUT || c < 0) {
         return;
     }
-    if (link_board_debug_key(c)) {
+    if (link_diag_key(c) || link_board_debug_key(c)) {
         return;
     }
     floss_err_t err;
@@ -339,6 +340,7 @@ int main(void) {
         t = prof_mark(PROF_PAD, t);
 
         link_board_led_task(now);
+        link_diag_task(now);
         t = prof_mark(PROF_LED, t);
         console_task(now);
         prof_mark(PROF_CONSOLE, t);

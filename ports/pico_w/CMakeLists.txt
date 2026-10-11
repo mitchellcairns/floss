@@ -111,6 +111,7 @@ function(floss_pico_link_firmware name main_src)
     set(srcs
         link/${main_src}
         link/link_board.c
+        link/link_diag.c
         floss_hal_pico.c
         ${FLOSS_ROOT}/transport/cyw43/floss_cyw43.c
         ${FLOSS_ROOT}/examples/gamepad/gamepad_state.c

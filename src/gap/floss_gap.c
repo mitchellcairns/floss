@@ -674,6 +674,61 @@ floss_err_t floss_gap_set_flush_timeout(uint16_t handle, uint16_t ms)
     return send_u16x2(FLOSS_HCI_WRITE_AUTOMATIC_FLUSH_TIMEOUT, handle, (uint16_t)slots, NULL);
 }
 
+floss_err_t floss_gap_set_afh_assessment(bool enabled)
+{
+    uint8_t mode = enabled ? 1u : 0u;
+    return floss_hci_cmd(FLOSS_HCI_WRITE_AFH_CHANNEL_ASSESSMENT_MODE, &mode, 1, NULL, NULL);
+}
+
+floss_err_t floss_gap_set_afh_host_channels(const uint8_t map[10])
+{
+    uint8_t m[10];
+    memcpy(m, map, 10);
+    m[9] &= 0x7F; /* bit 79 is reserved */
+    return floss_hci_cmd(FLOSS_HCI_SET_AFH_HOST_CHANNEL_CLASSIFICATION, m, sizeof m, NULL, NULL);
+}
+
+typedef struct {
+    floss_gap_afh_map_fn fn;
+    void *user;
+    uint16_t handle;
+} afh_read_t;
+static afh_read_t s_afh_read; /* one read at a time is plenty */
+
+static void afh_map_done(void *ctx, uint16_t opcode, uint8_t status, const uint8_t *ret, uint16_t len)
+{
+    afh_read_t *r = (afh_read_t *)ctx;
+    static const uint8_t none[10];
+    /* Return parameters after status: handle(2) mode(1) map(10). */
+    bool ok = status == FLOSS_HCI_SUCCESS && ret != NULL && len >= 13;
+    floss_gap_afh_map_fn fn = r->fn;
+    r->fn = NULL;
+    if (fn) {
+        fn(r->handle, ok ? 0 : (status ? status : FLOSS_HCI_ERR_UNSPECIFIED), ok ? ret[2] : 0, ok ? &ret[3] : none,
+           r->user);
+    }
+}
+
+floss_err_t floss_gap_read_afh_map(uint16_t handle, floss_gap_afh_map_fn fn, void *user)
+{
+    if (!classic_conn(handle)) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    if (s_afh_read.fn) {
+        return FLOSS_ERR_BUSY;
+    }
+    uint8_t p[2];
+    floss_put_le16(p, handle);
+    s_afh_read.fn = fn;
+    s_afh_read.user = user;
+    s_afh_read.handle = handle;
+    floss_err_t err = floss_hci_cmd(FLOSS_HCI_READ_AFH_CHANNEL_MAP, p, sizeof p, afh_map_done, &s_afh_read);
+    if (err != FLOSS_OK) {
+        s_afh_read.fn = NULL;
+    }
+    return err;
+}
+
 floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate)
 {
     if (!classic_conn(handle)) {
