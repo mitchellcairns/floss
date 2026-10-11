@@ -148,7 +148,7 @@ always-on **stats** with latency histograms (`floss_stats_dump()` prints
 tuning hints), a binary **trace** ring cheap enough for hot paths, and
 **debug pins** for a logic analyser. "Reports arrive in bursts?" Check the
 `acl_ack_latency` histogram and the link mode. See
-[docs/DEBUGGING.md](docs/DEBUGGING.md).
+[docs/DEBUGGING.md](docs/DEBUGGING.md) and [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Documentation
 
