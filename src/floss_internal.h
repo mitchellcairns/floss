@@ -112,6 +112,15 @@ void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted);
 void floss_rfcomm_init(void);
 #endif
 
+/* ===================== core -> HID ======================================= */
+
+/**
+ * Give the HID input path a turn: send mailbox reports that are due and
+ * retry a deferred control response. Called by floss_poll() on every
+ * iteration; costs a couple of loads when there is nothing to do.
+ */
+void floss_hid_poll(void);
+
 /* ===================== core ============================================== */
 
 void floss_debug_init(void);
