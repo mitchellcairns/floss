@@ -46,10 +46,21 @@ static uint8_t sig_next_id;
 /** Max data we echo back: keeps the whole C-frame within the minimum 48-byte signaling MTU. */
 #define SIG_ECHO_MAX 44
 
+static floss_l2cap_unknown_cid_fn sig_unknown_cid_hook;
+
 void floss_l2cap_sig_init(void)
 {
     sig_next_id = 1;
+    sig_unknown_cid_hook = NULL;
 }
+
+void floss_l2cap_set_unknown_cid_hook(floss_l2cap_unknown_cid_fn fn)
+{
+    sig_unknown_cid_hook = fn;
+}
+
+/** Reject a request for a channel we do not have, and tell the application. */
+static void sig_reject_unknown_cid(uint16_t handle, uint8_t id, uint16_t dcid, uint16_t scid);
 
 static uint8_t sig_alloc_id(void)
 {
@@ -106,6 +117,14 @@ static void sig_send_reject(uint16_t handle, uint8_t id, uint16_t reason, uint16
         n = 6;
     }
     sig_send(handle, FLOSS_L2CAP_SIG_CMD_REJECT, id, d, n);
+}
+
+static void sig_reject_unknown_cid(uint16_t handle, uint8_t id, uint16_t dcid, uint16_t scid)
+{
+    sig_send_reject(handle, id, FLOSS_L2CAP_REJ_INVALID_CID, dcid, scid);
+    if (sig_unknown_cid_hook) {
+        sig_unknown_cid_hook(handle, dcid);
+    }
 }
 
 /** Connection Response: dcid = our CID (0 on refusal), scid = the requester's CID. */
@@ -504,7 +523,7 @@ static void sig_on_config_req(uint16_t handle, uint8_t id, const uint8_t *d, uin
     uint16_t flags = floss_get_le16(d + 2);
     floss_l2cap_slot_t *s = floss_l2cap_slot_by_local_cid(handle, dcid);
     if (!s || (s->chan.state != FLOSS_L2CAP_CONFIG && s->chan.state != FLOSS_L2CAP_OPEN)) {
-        sig_send_reject(handle, id, FLOSS_L2CAP_REJ_INVALID_CID, dcid, 0);
+        sig_reject_unknown_cid(handle, id, dcid, 0);
         return;
     }
     floss_l2cap_chan_t *chan = &s->chan;
@@ -579,7 +598,7 @@ static void sig_on_disc_req(uint16_t handle, uint8_t id, const uint8_t *d, uint1
     floss_l2cap_slot_t *s = floss_l2cap_slot_by_local_cid(handle, dcid);
     if (!s || s->chan.remote_cid != scid || s->chan.state == FLOSS_L2CAP_WAIT_SECURITY ||
         s->chan.state == FLOSS_L2CAP_WAIT_CONN_RSP) {
-        sig_send_reject(handle, id, FLOSS_L2CAP_REJ_INVALID_CID, dcid, scid);
+        sig_reject_unknown_cid(handle, id, dcid, scid);
         return;
     }
     uint8_t rsp[4];

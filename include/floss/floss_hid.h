@@ -203,6 +203,30 @@ typedef struct {
      * gaps). The host keeps assessing on its own. Default false.
      */
     bool afh_assessment;
+
+    /* --- integration ------------------------------------------------------ */
+    /**
+     * Serve this pre-serialised HID service record instead of building one
+     * from the fields above (for hosts that check the record byte for byte).
+     * Same format as floss_sdp_register(): it must start with attribute
+     * 0x0000 as a uint32, whose value is replaced by the assigned handle.
+     * Copied at floss_hid_init(). NULL = build the record.
+     */
+    const uint8_t *sdp_record;
+    uint16_t sdp_record_len;
+    /**
+     * Accept and open the HID channels without authentication or encryption,
+     * for hosts that authenticate on their own terms and break when the
+     * device asks for security first. Default false (channels need an
+     * encrypted link).
+     */
+    bool no_security;
+    /**
+     * The application alone decides when the device is discoverable and
+     * connectable (floss_gap_set_scan()); the HID layer never changes it.
+     * auto_discoverable is then ignored. Default false.
+     */
+    bool app_controls_scan;
 } floss_hid_config_t;
 
 /** Fill a config with gamepad-friendly defaults (name/descriptor still required). */
@@ -240,6 +264,15 @@ typedef struct {
      * to sample inputs "just in time" and minimise report age.
      */
     void (*on_report_tick)(void);
+    /**
+     * A floss_hid_connect() (or auto reconnect) gave up without a session.
+     * reason: HCI status of the last failure (page timeout, key missing...,
+     * FLOSS_HCI_ERR_LOCAL_HOST_TERMINATED when the link came up but the
+     * session did not). channel_status: on_open status of the HID channel
+     * that failed to open on the last attempt (FLOSS_L2CAP_CONN_* or
+     * FLOSS_L2CAP_STATUS_*), 0 if no channel failed.
+     */
+    void (*on_connect_failed)(uint8_t reason, uint16_t channel_status);
 } floss_hid_callbacks_t;
 
 /** Initialise. Call after floss_init(), before floss_start(). cfg and descriptor must stay valid. */
@@ -267,6 +300,13 @@ floss_err_t floss_hid_set_boot_input(uint8_t boot_id, const uint8_t *data, uint1
  * Returns FLOSS_ERR_BUSY if no controller credit is free right now.
  */
 floss_err_t floss_hid_send_input_now(uint8_t report_id, const uint8_t *data, uint16_t len);
+
+/**
+ * True when a report handed over now (floss_hid_send_input_now()) would go
+ * to the controller straight away, within the max_inflight cap. Lets an
+ * application build a report only when it can leave (stack context only).
+ */
+bool floss_hid_can_send_now(void);
 
 /** Reconnect to a host (NULL = most recently bonded). */
 floss_err_t floss_hid_connect(const floss_addr_t *host);
