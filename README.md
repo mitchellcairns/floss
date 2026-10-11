@@ -158,6 +158,7 @@ tuning hints), a binary **trace** ring cheap enough for hot paths, and
 | [PORTING.md](docs/PORTING.md) | HAL contract, writing a transport, configuration table |
 | [DEBUGGING.md](docs/DEBUGGING.md) | tools, stats reference, troubleshooting recipes |
 | [HID_GAMEPAD.md](docs/HID_GAMEPAD.md) | building a gamepad: descriptors, pacing, latency trade-offs |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | measured report timing on hardware, what each latency knob does, defaults |
 | [LE.md](docs/LE.md), [RFCOMM.md](docs/RFCOMM.md) | in-progress designs |
 | [LEGAL.md](docs/LEGAL.md) | licensing, naming, clean-room policy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | style, tests, commits |
