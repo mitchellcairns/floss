@@ -4,7 +4,7 @@
  *
  * floss_debug.h - The debugging toolbox.
  *
- * Four tools, from most to least expensive. Use the cheapest one that answers
+ * Five tools, from most to least expensive. Use the cheapest one that answers
  * your question; see docs/DEBUGGING.md for recipes.
  *
  *  1. LOGS   FLOSS_LOGI(HCI, "...")   printf-style text, per-module level.
@@ -48,6 +48,9 @@ typedef enum {
     FLOSS_MOD_SDP,
     FLOSS_MOD_HID,
     FLOSS_MOD_APP,
+    FLOSS_MOD_LE,      /* LE GAP, ATT, GATT, HID-over-GATT */
+    FLOSS_MOD_SMP,
+    FLOSS_MOD_RFCOMM,
     FLOSS_MOD_COUNT
 } floss_mod_t;
 
