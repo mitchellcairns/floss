@@ -32,6 +32,21 @@
  *
  *  Single writer per report ID: the seqlock tolerates one producer per ID
  *  (no atomic read-modify-write is used, Cortex-M0+ has none).
+ *
+ *  BOOT PROTOCOL (keyboards, mice)
+ *  -------------------------------
+ *  With cfg.boot_keyboard / cfg.boot_mouse the service also carries the Boot
+ *  Keyboard Input (0x2A22) + Output (0x2A32) and Boot Mouse Input (0x2A33)
+ *  characteristics and Protocol Mode (0x2A4E). The design mirrors Classic
+ *  HID (floss_hid.h): boot input reports have their own mailbox slots, filled
+ *  with floss_hogp_set_boot_input(FLOSS_HID_BOOT_KEYBOARD / _MOUSE, ...),
+ *  and the stack notifies only the reports of the current protocol - Report
+ *  characteristics in REPORT protocol, boot characteristics in BOOT - and
+ *  sends the newest state of the new set once after a switch. The simplest
+ *  application publishes both formats on every change. A write to the Boot
+ *  Keyboard Output Report (LEDs) reaches on_output_report with report_id
+ *  FLOSS_HID_BOOT_KEYBOARD. Protocol Mode returns to REPORT when the link
+ *  drops (each connection starts in report protocol).
  */
 #ifndef FLOSS_HOGP_H
 #define FLOSS_HOGP_H
@@ -72,7 +87,9 @@ typedef struct {
     uint8_t country_code;            /**< 0 = not localised */
     bool remote_wake;
     bool normally_connectable;       /**< default true */
-    bool boot_device;                /**< expose Protocol Mode (boot reports not provided) */
+    bool boot_device;                /**< expose Protocol Mode (implied by boot_keyboard / boot_mouse) */
+    bool boot_keyboard;              /**< Boot Keyboard Input + Output Report characteristics */
+    bool boot_mouse;                 /**< Boot Mouse Input Report characteristic */
 
     /* --- companion services ------------------------------------------------ */
     const char *manufacturer;        /**< Device Information: Manufacturer Name (NULL = omit) */
@@ -145,6 +162,18 @@ floss_err_t floss_hogp_init(const floss_hogp_config_t *cfg, const floss_hogp_cal
  * unknown input report ID.
  */
 floss_err_t floss_hogp_set_input(uint8_t report_id, const uint8_t *data, uint16_t len);
+
+/**
+ * Publish the newest BOOT protocol input report (ISR / other-core safe, never
+ * blocks). boot_id = FLOSS_HID_BOOT_KEYBOARD (len 8) or FLOSS_HID_BOOT_MOUSE
+ * (len 3..FLOSS_HOGP_BOOT_MOUSE_MAX_LEN). Notified only while the host has
+ * selected boot protocol. FLOSS_ERR_UNSUPPORTED if cfg did not enable that
+ * boot report.
+ */
+floss_err_t floss_hogp_set_boot_input(uint8_t boot_id, const uint8_t *data, uint16_t len);
+
+/** Largest Boot Mouse Input Report (buttons, X, Y, wheel + device-specific bytes). */
+#define FLOSS_HOGP_BOOT_MOUSE_MAX_LEN 8
 
 /**
  * Notify a report immediately to every subscribed host, bypassing the

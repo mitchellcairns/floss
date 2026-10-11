@@ -27,6 +27,39 @@
  *  in stats as coalesced) - a gamepad must never queue stale state.
  *  Input packets are FLUSHABLE + PRIORITY, so with a flush timeout set the
  *  controller drops reports it could not deliver in time.
+ *
+ *  KEYBOARDS, MICE AND THE BOOT PROTOCOL
+ *  -------------------------------------
+ *  A keyboard or mouse that sets cfg.boot_device may be switched by the host
+ *  (PC firmware, pre-boot environments, minimal hosts) to BOOT protocol,
+ *  where it must send the fixed formats of the USB HID 1.11 boot appendix
+ *  instead of its descriptor's reports:
+ *
+ *    keyboard (ID 1): modifiers, reserved, 6 key codes        (8 bytes)
+ *    mouse    (ID 2): buttons, X, Y [, wheel, ...]            (>= 3 bytes)
+ *
+ *  Every connection starts in REPORT protocol. Boot reports have their own
+ *  two mailbox slots, filled with floss_hid_set_boot_input(); the stack
+ *  sends from the slots of the CURRENT protocol only and, right after a
+ *  switch, sends the newest state of the new protocol's slots once. So the
+ *  simplest application publishes both formats on every change:
+ *
+ *      floss_hid_set_input(KBD_REPORT_ID, report, sizeof report);
+ *      floss_hid_set_boot_input(FLOSS_HID_BOOT_KEYBOARD, boot, 8);
+ *
+ *  (two small copies, no protocol bookkeeping). An application that prefers
+ *  to publish one format only can follow on_set_protocol / floss_hid_protocol()
+ *  (and must then publish the new format when the protocol changes).
+ *  In boot protocol the report ID byte is always on the wire (even with a
+ *  descriptor without IDs): output reports such as the keyboard LEDs reach
+ *  on_output_report with report_id FLOSS_HID_BOOT_KEYBOARD, and GET_REPORT
+ *  (input) is answered from the boot slots. SET_PROTOCOL(boot) on a device
+ *  without cfg.boot_device is refused with ERR_INVALID_PARAMETER.
+ *
+ *  Large transfers on the control channel: a SET_REPORT larger than the
+ *  channel MTU arrives as SET_REPORT + DATC continuations and is reassembled
+ *  (up to report ID + FLOSS_HID_MAX_REPORT bytes) before the callbacks run;
+ *  GET_REPORT answers larger than the host's MTU leave as DATA + DATC.
  */
 #ifndef FLOSS_HID_H
 #define FLOSS_HID_H
@@ -64,6 +97,35 @@ extern "C" {
 #define FLOSS_HID_CTRL_EXIT_SUSPEND         0x4
 #define FLOSS_HID_CTRL_VIRTUAL_CABLE_UNPLUG 0x5
 
+/* Boot protocol report IDs (fixed by the boot protocol; floss_hid_set_boot_input) */
+#define FLOSS_HID_BOOT_KEYBOARD 1 /**< input: 8 bytes; output: 1 byte of LEDs */
+#define FLOSS_HID_BOOT_MOUSE    2 /**< input: buttons, X, Y (+ optional wheel, ...) */
+
+#define FLOSS_HID_BOOT_KEYBOARD_LEN  8
+#define FLOSS_HID_BOOT_MOUSE_MIN_LEN 3
+
+/* Boot keyboard modifier byte (byte 0 of the keyboard boot report) */
+#define FLOSS_HID_MOD_LCTRL  0x01
+#define FLOSS_HID_MOD_LSHIFT 0x02
+#define FLOSS_HID_MOD_LALT   0x04
+#define FLOSS_HID_MOD_LGUI   0x08
+#define FLOSS_HID_MOD_RCTRL  0x10
+#define FLOSS_HID_MOD_RSHIFT 0x20
+#define FLOSS_HID_MOD_RALT   0x40
+#define FLOSS_HID_MOD_RGUI   0x80
+
+/* Boot keyboard LED output byte */
+#define FLOSS_HID_LED_NUM_LOCK    0x01
+#define FLOSS_HID_LED_CAPS_LOCK   0x02
+#define FLOSS_HID_LED_SCROLL_LOCK 0x04
+#define FLOSS_HID_LED_COMPOSE     0x08
+#define FLOSS_HID_LED_KANA        0x10
+
+/* Boot mouse button byte */
+#define FLOSS_HID_MOUSE_LEFT   0x01
+#define FLOSS_HID_MOUSE_RIGHT  0x02
+#define FLOSS_HID_MOUSE_MIDDLE 0x04
+
 /* SDP device subclass values */
 #define FLOSS_HID_SUBCLASS_JOYSTICK 0x04
 #define FLOSS_HID_SUBCLASS_GAMEPAD  0x08
@@ -89,7 +151,12 @@ typedef struct {
     uint16_t vendor_id;
     uint16_t product_id;
     uint16_t version;
-    bool boot_device;                /**< supports boot protocol (keyboard/mouse) */
+    /**
+     * Supports boot protocol (keyboards, mice). Which boot reports exist
+     * follows the subclass: KEYBOARD -> keyboard, MOUSE -> mouse, COMBO (or
+     * anything else) -> both.
+     */
+    bool boot_device;
     bool virtual_cable;              /**< default true */
     bool reconnect_initiate;         /**< device reconnects to host (default true) */
     bool normally_connectable;
@@ -153,7 +220,10 @@ typedef struct {
     uint8_t (*on_get_report)(uint8_t type, uint8_t report_id, uint8_t *out, uint16_t cap, uint16_t *len);
     /** SET_REPORT (feature/output on control). Return a handshake code. */
     uint8_t (*on_set_report)(uint8_t type, uint8_t report_id, const uint8_t *data, uint16_t len);
-    /** SET_PROTOCOL (boot/report). */
+    /**
+     * SET_PROTOCOL (boot/report) accepted. Not called for the REPORT
+     * protocol every connection implicitly starts in.
+     */
     void (*on_set_protocol)(uint8_t protocol);
     /** HID_CONTROL operations (suspend, exit suspend, unplug...). */
     void (*on_control)(uint8_t op);
@@ -173,6 +243,17 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
  * report_id 0 = descriptor without report IDs. len <= FLOSS_HID_MAX_REPORT.
  */
 floss_err_t floss_hid_set_input(uint8_t report_id, const uint8_t *data, uint16_t len);
+
+/**
+ * Publish the newest BOOT protocol input report (ISR / other-core safe, never
+ * blocks). boot_id = FLOSS_HID_BOOT_KEYBOARD (len 8) or FLOSS_HID_BOOT_MOUSE
+ * (len 3..FLOSS_HID_MAX_REPORT), data WITHOUT the ID byte. It is sent only
+ * while the host has selected boot protocol; in report protocol the slot is
+ * just kept current for a later switch. FLOSS_ERR_UNSUPPORTED if the device
+ * does not provide that boot report (see floss_hid_config_t.boot_device).
+ * One writer per boot_id, as for floss_hid_set_input().
+ */
+floss_err_t floss_hid_set_boot_input(uint8_t boot_id, const uint8_t *data, uint16_t len);
 
 /**
  * Send a report immediately, bypassing the mailbox (stack context only).

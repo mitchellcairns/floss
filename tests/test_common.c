@@ -97,11 +97,23 @@ static void tc_on_report_tick(void) {
     floss_tc_hid.report_ticks++;
 }
 
+/* Serves floss_tc_hid.feature; declines everything else (inputs then come from the mailbox). */
+static uint8_t tc_on_get_report(uint8_t type, uint8_t report_id, uint8_t *out, uint16_t cap, uint16_t *len) {
+    (void)report_id;
+    floss_tc_hid.get_reports++;
+    if (type != FLOSS_HID_REPORT_FEATURE || floss_tc_hid.feature_len == 0) {
+        return FLOSS_HID_HS_ERR_UNSUPPORTED_REQUEST;
+    }
+    *len = FLOSS_MIN(floss_tc_hid.feature_len, cap);
+    memcpy(out, floss_tc_hid.feature, *len);
+    return FLOSS_HID_HS_SUCCESSFUL;
+}
+
 const floss_hid_callbacks_t floss_tc_hid_callbacks = {
     .on_connected = tc_on_connected,
     .on_disconnected = tc_on_disconnected,
     .on_output_report = tc_on_output_report,
-    .on_get_report = NULL, /* input reports answered from the mailbox */
+    .on_get_report = tc_on_get_report, /* features from floss_tc_hid.feature; inputs from the mailbox */
     .on_set_report = tc_on_set_report,
     .on_set_protocol = tc_on_set_protocol,
     .on_control = tc_on_control,
