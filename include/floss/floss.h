@@ -52,6 +52,7 @@
 #include "floss_le.h"
 #include "floss_gatt.h"
 #include "floss_hogp.h"
+#include "floss_smp.h"
 #endif
 #if FLOSS_ENABLE_RFCOMM
 #include "floss_rfcomm.h"

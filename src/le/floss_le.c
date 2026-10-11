@@ -763,6 +763,13 @@ static void on_conn_complete(const uint8_t *p, uint8_t len, bool enhanced) {
                (unsigned)(s->info.interval * 125u % 100u));
 
     floss_att_on_link_up(handle);
+    /* SMP's confirm values hash our address: tell it which one this link uses. */
+    {
+        floss_addr_t own;
+        uint8_t own_type;
+        floss_le_own_address(&own, &own_type);
+        floss_smp_set_local_addr(own_type, &own);
+    }
     floss_smp_on_link_up(handle, role, s->info.peer_addr_type, &s->info.peer);
     emit_link_evt(FLOSS_LE_EVT_CONNECTED, s, 0);
 

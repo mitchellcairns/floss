@@ -420,7 +420,7 @@ static void smp_send(smp_conn_t *c, const uint8_t *pdu, uint16_t len) {
     }
     floss_err_t err = floss_le_send_fixed(c->handle, SMP_CID, pdu, len);
     if (err != FLOSS_OK) {
-        FLOSS_LOGW(GAP, "SMP %u: send 0x%02x failed: %s", c->handle, pdu[0], floss_err_str(err));
+        FLOSS_LOGW(SMP, "SMP %u: send 0x%02x failed: %s", c->handle, pdu[0], floss_err_str(err));
     }
 }
 
@@ -484,7 +484,7 @@ static void smp_fail(smp_conn_t *c, uint8_t reason) {
     if (!smp_pairing_active(c)) {
         return;
     }
-    FLOSS_LOGW(GAP, "SMP %u: pairing failed, reason 0x%02x", c->handle, reason);
+    FLOSS_LOGW(SMP, "SMP %u: pairing failed, reason 0x%02x", c->handle, reason);
     smp_send_failed_raw(c->handle, reason);
     smp_pairing_end(c, SMP_IDLE);
     smp_report_failed(c, reason);
@@ -506,10 +506,10 @@ static void smp_reject(smp_conn_t *c, uint8_t reason) {
  */
 static void smp_unexpected(smp_conn_t *c, uint8_t code) {
     if (smp_pairing_active(c)) {
-        FLOSS_LOGW(GAP, "SMP %u: unexpected 0x%02x in state %u", c->handle, code, c->state);
+        FLOSS_LOGW(SMP, "SMP %u: unexpected 0x%02x in state %u", c->handle, code, c->state);
         smp_fail(c, FLOSS_SMP_REASON_UNSPECIFIED);
     } else {
-        FLOSS_LOGD(GAP, "SMP %u: ignoring 0x%02x outside pairing", c->handle, code);
+        FLOSS_LOGD(SMP, "SMP %u: ignoring 0x%02x outside pairing", c->handle, code);
     }
 }
 
@@ -520,7 +520,7 @@ static void smp_timeout(floss_timer_t *t, void *arg) {
     }
     /* No Pairing Failed: after a timeout no SMP command may be sent on this
      * link; a new pairing needs a new link (Vol 3 Part H 3.4). */
-    FLOSS_LOGW(GAP, "SMP %u: timeout", c->handle);
+    FLOSS_LOGW(SMP, "SMP %u: timeout", c->handle);
     smp_pairing_end(c, SMP_TIMED_OUT);
     smp_report_failed(c, FLOSS_SMP_REASON_TIMEOUT);
 }
@@ -563,7 +563,7 @@ static void smp_bond_write(unsigned idx) {
     smp_bond_serialize(&s_bonds[idx], rec);
     floss_err_t err = floss_hal_store_write((uint16_t)(FLOSS_SMP_STORE_KEY_BOND_BASE + idx), rec, sizeof rec);
     if (err != FLOSS_OK) {
-        FLOSS_LOGW(GAP, "SMP: bond %u store failed: %s", idx, floss_err_str(err));
+        FLOSS_LOGW(SMP, "SMP: bond %u store failed: %s", idx, floss_err_str(err));
     }
     memset(rec, 0, sizeof rec);
 }
@@ -644,7 +644,7 @@ static int smp_bond_save(const floss_smp_bond_t *nb) {
                 idx = (int)i;
             }
         }
-        FLOSS_LOGI(GAP, "SMP: bond table full, evicting slot %d", idx);
+        FLOSS_LOGI(SMP, "SMP: bond table full, evicting slot %d", idx);
         smp_bond_remove((unsigned)idx);
     }
     s_bonds[idx] = *nb;
@@ -670,7 +670,7 @@ static void smp_irk_load(void) {
      * peers can keep resolving our private addresses. */
     floss_hal_random(s_irk, sizeof s_irk);
     if (floss_hal_store_write(FLOSS_SMP_STORE_KEY_IRK, s_irk, sizeof s_irk) != FLOSS_OK) {
-        FLOSS_LOGW(GAP, "SMP: could not persist IRK");
+        FLOSS_LOGW(SMP, "SMP: could not persist IRK");
     }
 }
 
@@ -692,7 +692,7 @@ static bool smp_sc_supported(void) {
 }
 
 static void smp_pk_failed(void) {
-    FLOSS_LOGW(GAP, "SMP: controller cannot provide a P-256 key, LE Secure Connections disabled");
+    FLOSS_LOGW(SMP, "SMP: controller cannot provide a P-256 key, LE Secure Connections disabled");
     s_pk_state = PK_FAILED;
     for (unsigned i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
         if (s_conns[i].used && s_conns[i].p.pk_tx_pending) {
@@ -790,7 +790,7 @@ static void smp_ltk_reply(uint16_t handle, const uint8_t ltk[16]) {
     floss_put_le16(cmd, handle);
     memcpy(&cmd[2], ltk, 16);
     if (floss_hci_cmd(SMP_OP_LE_LTK_REPLY, cmd, sizeof cmd, NULL, NULL) != FLOSS_OK) {
-        FLOSS_LOGE(GAP, "SMP %u: cannot queue LTK reply", handle);
+        FLOSS_LOGE(SMP, "SMP %u: cannot queue LTK reply", handle);
     }
     memset(cmd, 0, sizeof cmd);
 }
@@ -799,7 +799,7 @@ static void smp_ltk_neg_reply(uint16_t handle) {
     uint8_t cmd[2];
     floss_put_le16(cmd, handle);
     if (floss_hci_cmd(SMP_OP_LE_LTK_NEG_REPLY, cmd, sizeof cmd, NULL, NULL) != FLOSS_OK) {
-        FLOSS_LOGE(GAP, "SMP %u: cannot queue LTK negative reply", handle);
+        FLOSS_LOGE(SMP, "SMP %u: cannot queue LTK negative reply", handle);
     }
 }
 
@@ -811,7 +811,7 @@ static void smp_enc_cmd_cb(void *ctx, uint16_t opcode, uint8_t status, const uin
     if (!c) {
         return;
     }
-    FLOSS_LOGW(GAP, "SMP %u: LE Enable Encryption rejected (0x%02x)", c->handle, status);
+    FLOSS_LOGW(SMP, "SMP %u: LE Enable Encryption rejected (0x%02x)", c->handle, status);
     c->enc_bond = -1;
     if (c->state == SMP_WAIT_ENCRYPTION) {
         smp_fail(c, FLOSS_SMP_REASON_UNSPECIFIED);
@@ -870,7 +870,7 @@ static void smp_on_ltk_request(const uint8_t *params, uint8_t len) {
         }
     }
     if (idx < 0) {
-        FLOSS_LOGI(GAP, "SMP %u: no key for LTK request (ediv 0x%04x)", handle, ediv);
+        FLOSS_LOGI(SMP, "SMP %u: no key for LTK request (ediv 0x%04x)", handle, ediv);
         smp_ltk_neg_reply(handle);
         return;
     }
@@ -933,7 +933,7 @@ static uint8_t smp_negotiate(smp_conn_t *c) {
     p->rx_keys = (uint8_t)(((peer_dist & FLOSS_SMP_DIST_ENC) ? (SMP_RX_ENC_INFO | SMP_RX_CENTRAL_ID) : 0) |
                            ((peer_dist & FLOSS_SMP_DIST_ID) ? (SMP_RX_ID_INFO | SMP_RX_ID_ADDR) : 0));
 
-    FLOSS_LOGI(GAP, "SMP %u: %s pairing, %s, key size %u%s", c->handle, p->sc ? "SC" : "legacy",
+    FLOSS_LOGI(SMP, "SMP %u: %s pairing, %s, key size %u%s", c->handle, p->sc ? "SC" : "legacy",
                s_method_name[p->method], p->key_size, p->bonding ? ", bonding" : "");
     return 0;
 }
@@ -1474,7 +1474,7 @@ static void smp_pairing_complete(smp_conn_t *c) {
         c->bond = (int8_t)idx;
         bonded = true;
     }
-    FLOSS_LOGI(GAP, "SMP %u: pairing complete, level %u%s", c->handle, c->level, bonded ? ", bonded" : "");
+    FLOSS_LOGI(SMP, "SMP %u: pairing complete, level %u%s", c->handle, c->level, bonded ? ", bonded" : "");
 
     floss_smp_evt_t evt;
     smp_pairing_end(c, SMP_IDLE);
@@ -1558,7 +1558,7 @@ void floss_smp_on_link_up(uint16_t handle, uint8_t role, uint8_t peer_addr_type,
         }
     }
     if (!c) {
-        FLOSS_LOGE(GAP, "SMP: no context for handle %u", handle);
+        FLOSS_LOGE(SMP, "SMP: no context for handle %u", handle);
         return;
     }
     floss_timer_stop(&c->timer);
@@ -1633,7 +1633,7 @@ void floss_smp_on_pdu(uint16_t handle, const uint8_t *data, uint16_t len) {
     case SMP_KEYPRESS_NOTIFICATION: break; /* informational only */
     case SMP_PAIRING_FAILED:
         if (smp_pairing_active(c)) {
-            FLOSS_LOGW(GAP, "SMP %u: peer aborted pairing, reason 0x%02x", handle, data[1]);
+            FLOSS_LOGW(SMP, "SMP %u: peer aborted pairing, reason 0x%02x", handle, data[1]);
             smp_pairing_end(c, SMP_IDLE);
             smp_report_failed(c, data[1]);
         }
@@ -1693,7 +1693,7 @@ void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted) {
     c->enc_bond = -1;
     if (status != FLOSS_HCI_SUCCESS) {
         /* e.g. 0x06 PIN or Key Missing: the peer lost its bond with us. */
-        FLOSS_LOGW(GAP, "SMP %u: encryption failed (0x%02x)", handle, status);
+        FLOSS_LOGW(SMP, "SMP %u: encryption failed (0x%02x)", handle, status);
         return;
     }
     if (!encrypted) {
@@ -1705,7 +1705,7 @@ void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted) {
         c->bond = idx;
         smp_set_level(c, smp_bond_level(&s_bonds[idx]));
         smp_bond_touch((unsigned)idx);
-        FLOSS_LOGI(GAP, "SMP %u: encrypted with bond, level %u", handle, c->level);
+        FLOSS_LOGI(SMP, "SMP %u: encrypted with bond, level %u", handle, c->level);
         smp_emit_simple(FLOSS_SMP_EVT_SECURITY_CHANGED, c);
     }
     /* else: key refresh with the same key, nothing changes */
