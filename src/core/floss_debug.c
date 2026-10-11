@@ -43,7 +43,7 @@
 
 /** Module tags, padded to 4 columns by the formatter. Order = floss_mod_t. */
 static const char *const s_mod_names[] = {
-    "CORE", "TRNS", "HCI", "GAP", "L2C", "SDP", "HID", "APP",
+    "CORE", "TRNS", "HCI", "GAP", "L2C", "SDP", "HID", "APP", "LE", "SMP", "RFC",
 };
 _Static_assert(FLOSS_ARRAY_SIZE(s_mod_names) == FLOSS_MOD_COUNT, "s_mod_names out of sync with floss_mod_t");
 
