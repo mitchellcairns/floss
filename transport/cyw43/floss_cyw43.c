@@ -168,6 +168,12 @@ const floss_chipset_t floss_chipset_cyw43 = {
 
 void floss_cyw43_default_addr(floss_addr_t *addr) {
     uint8_t mac[6]; /* MSB first */
+    /*
+     * cyw43_state.mac is only filled once the chip has been powered and its
+     * OTP read, which happens inside the (idempotent) radio bring-up. Do it
+     * here so callers may ask for the address before floss_start().
+     */
+    (void)cyw43_bluetooth_hci_init();
     cyw43_hal_get_mac(0, mac);
     mac[5]++;
     for (int i = 0; i < 6; i++) {
