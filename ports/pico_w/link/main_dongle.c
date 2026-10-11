@@ -1,4 +1,4 @@
-/*
+﻿/*
  * FLOSS - Free, Lightweight, Open Short-range Stack
  * SPDX-License-Identifier: Unlicense
  *
@@ -53,7 +53,7 @@
 
 /** Round-trip probe period (ms): PING -> PONG, shown as "rtt" in the status. */
 #ifndef LINK_DONGLE_PING_MS
-#define LINK_DONGLE_PING_MS 100u
+#define LINK_DONGLE_PING_MS 0u
 #endif
 
 #define BOOT_USB_WAIT_MS  1500u
@@ -80,9 +80,69 @@ static void on_disconnected(uint8_t reason) {
     usb_gamepad_neutral(); /* no stuck buttons on the PC */
 }
 
+/*
+ * Gap catcher ('g' arms it for the next N gaps): when a report arrives more
+ * than GAP_CATCH_US after the previous one, freeze the stack's trace ring so
+ * the HCI-level events around the hole can be dumped from the main loop.
+ */
+#define GAP_CATCH_US 8000u
+static uint8_t gap_armed;          /* gaps still to catch */
+static volatile uint32_t gap_caught_us; /* 0 = none pending */
+static uint32_t gap_last_rx;
+static bool gap_log_all;            /* 'G': print every gap (no trace) */
+static uint32_t gap_log_len[16], gap_log_at[16];
+static volatile uint8_t gap_log_w, gap_log_r;
+
 static void on_input(uint8_t report_id, const uint8_t *data, uint8_t len, const floss_link_rx_info_t *info) {
     usb_gamepad_input(report_id, data, len, info->t_rx_us); /* first: latency */
     rx_meter_add(info->t_pad_us, info->t_rx_us, info->lost);
+    uint32_t gap = info->t_rx_us - gap_last_rx;
+    gap_last_rx = info->t_rx_us;
+    if (gap_log_all && gap >= GAP_CATCH_US && gap < 1000000u && (uint8_t)(gap_log_w - gap_log_r) < 16u) {
+        gap_log_len[gap_log_w & 15u] = gap;
+        gap_log_at[gap_log_w & 15u] = info->t_rx_us;
+        gap_log_w++;
+    }
+    if (gap_armed && !gap_caught_us && gap >= GAP_CATCH_US && gap < 1000000u) {
+        floss_trace_freeze(true);
+        gap_caught_us = gap;
+        gap_armed--;
+    }
+}
+
+/* Print the last GAP_LINES trace entries one per loop pass (the USB console drops when flooded). */
+#define GAP_LINES 48
+static floss_trace_entry_t gap_entries[FLOSS_TRACE_ENTRIES];
+static uint16_t gap_n, gap_i;
+
+static void gap_task(void) {
+    while (gap_log_r != gap_log_w) {
+        printf("gap %lu us ending at %lu ms\n", (unsigned long)gap_log_len[gap_log_r & 15u],
+               (unsigned long)(gap_log_at[gap_log_r & 15u] / 1000u));
+        gap_log_r++;
+    }
+    if (gap_caught_us && gap_n == 0) {
+        gap_n = floss_trace_read(gap_entries, FLOSS_TRACE_ENTRIES);
+        floss_trace_freeze(false);
+        gap_i = gap_n > GAP_LINES ? (uint16_t)(gap_n - GAP_LINES) : 0;
+        printf("=== GAP %lu us ending t=%lu, last %u trace entries (t relative to the gap end) ===\n",
+               (unsigned long)gap_caught_us, (unsigned long)gap_last_rx, (unsigned)(gap_n - gap_i));
+        return;
+    }
+    if (gap_n == 0) {
+        return;
+    }
+    if (gap_i < gap_n) {
+        const floss_trace_entry_t *e = &gap_entries[gap_i];
+        uint32_t prev = gap_i ? gap_entries[gap_i - 1].t_us : e->t_us;
+        printf("  %8ld %7lu  id %2u  arg 0x%08lx\n", (long)(int32_t)(e->t_us - gap_entries[gap_n - 1].t_us),
+               (unsigned long)(e->t_us - prev), (unsigned)e->id, (unsigned long)e->arg);
+        gap_i++;
+        return;
+    }
+    printf("=== end ===\n");
+    gap_n = 0;
+    gap_caught_us = 0;
 }
 
 static const floss_link_callbacks_t link_callbacks = {
@@ -176,6 +236,27 @@ static void console_task(uint32_t now) {
     case 'e':
         link_board_switch_transport(transport, FLOSS_LINK_LE);
         break;
+    case 'R': {
+        /* Experiment: hand the central role to the pad (or take it back). */
+        for (uint8_t i = 0; i < FLOSS_MAX_CONNECTIONS; i++) {
+            floss_conn_t *lc = floss_hci_conn_at(i);
+            if (lc->state == FLOSS_CONN_OPEN && !lc->le) {
+                uint8_t want = lc->role == 0 ? 1 : 0;
+                floss_gap_set_link_policy(lc->handle, FLOSS_LINK_POLICY_ROLE_SWITCH);
+                floss_err_t e = floss_gap_switch_role(lc->handle, want);
+                printf("role switch to %s: %s\n", want ? "peripheral" : "central", floss_err_str(e));
+            }
+        }
+        break;
+    }
+    case 'G':
+        gap_log_all = !gap_log_all;
+        printf("gap log %s\n", gap_log_all ? "on" : "off");
+        break;
+    case 'g':
+        gap_armed = 3;
+        printf("gap catcher armed for 3 gaps >= %u us\n", (unsigned)GAP_CATCH_US);
+        break;
     case 's':
         floss_stats_dump();
         floss_link_stats_dump();
@@ -253,23 +334,35 @@ static void status_task(uint32_t now) {
     static uint32_t last_t;
     static floss_hist_t rtt_prev;
     static uint32_t fwd_prev, repl_prev;
-    if (floss_time_diff(now, last_t) < (int32_t)STATUS_PERIOD_US) {
+    /* One window's results, printed once the sliced jitter analysis is done. */
+    static bool pending;
+    static rx_meter_result_t rx;
+    static uint32_t elapsed, waits, wait_p50, wait_p99, wait_max, fwd, repl;
+    static floss_hist_t rtt;
+
+    if (pending) {
+        if (!rx_meter_jitter_step(&rx)) {
+            return; /* a slice of analysis per loop pass: never stall the radio */
+        }
+        pending = false;
+    } else {
+        if (floss_time_diff(now, last_t) < (int32_t)STATUS_PERIOD_US) {
+            return;
+        }
+        elapsed = now - last_t;
+        last_t = now;
+        /* Close every window, connected or not, so the next line covers 5 s. */
+        rx_meter_finish(now, &rx);
+        waits = usb_gamepad_wait_window(&wait_p50, &wait_p99, &wait_max);
+        rtt = hist_window(&floss_link_stats()->rtt, &rtt_prev);
+        const usb_gamepad_stats_t *u = usb_gamepad_stats();
+        fwd = u->forwarded >= fwd_prev ? u->forwarded - fwd_prev : u->forwarded;
+        repl = u->replaced >= repl_prev ? u->replaced - repl_prev : u->replaced;
+        fwd_prev = u->forwarded;
+        repl_prev = u->replaced;
+        pending = true;
         return;
     }
-    uint32_t elapsed = now - last_t;
-    last_t = now;
-
-    /* Close every window, connected or not, so the next line covers 5 s. */
-    rx_meter_result_t rx;
-    rx_meter_finish(now, &rx);
-    uint32_t wait_p50, wait_p99, wait_max;
-    uint32_t waits = usb_gamepad_wait_window(&wait_p50, &wait_p99, &wait_max);
-    floss_hist_t rtt = hist_window(&floss_link_stats()->rtt, &rtt_prev);
-    const usb_gamepad_stats_t *u = usb_gamepad_stats();
-    uint32_t fwd = u->forwarded >= fwd_prev ? u->forwarded - fwd_prev : u->forwarded;
-    uint32_t repl = u->replaced >= repl_prev ? u->replaced - repl_prev : u->replaced;
-    fwd_prev = u->forwarded;
-    repl_prev = u->replaced;
     if (!floss_link_connected()) {
         return;
     }
@@ -350,5 +443,6 @@ int main(void) {
         prof_mark(PROF_CONSOLE, t);
         usb_state_task();
         status_task(now);
+        gap_task();
     }
 }

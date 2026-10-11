@@ -531,7 +531,11 @@ static void cl_on_gap_event(const floss_gap_evt_t *evt) {
         }
         return;
     case FLOSS_GAP_EVT_ROLE_CHANGE:
-        if (!is_pad() && evt->handle == C.handle && C.handle != CL_NO_HANDLE && evt->status == 0 && evt->mode == 1) {
+#ifndef FLOSS_LINK_DONGLE_KEEP_CENTRAL
+#define FLOSS_LINK_DONGLE_KEEP_CENTRAL 1
+#endif
+        if (FLOSS_LINK_DONGLE_KEEP_CENTRAL && !is_pad() && evt->handle == C.handle && C.handle != CL_NO_HANDLE &&
+            evt->status == 0 && evt->mode == 1) {
             FLOSS_LOGW(LINK, "pad took the central role: switching back");
             floss_gap_switch_role(C.handle, 0);
         }

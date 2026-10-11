@@ -4,7 +4,7 @@
 // floss_hostprobe - Windows host-side probe for measuring a FLOSS device:
 //   scan|pair|unpair|paired <name> [--le]   find / pair (auto-confirm) / forget a device
 //   conns                                  list paired devices and whether connected
-//   pads <seconds>                         read the first game controller through the
+//   pads <seconds> [gap_ms]                read the first game controller through the
 //                                          OS game-input API and analyse report timing
 //
 // Report timing analysis relies on the example gamepad's demo mode, where one
@@ -32,7 +32,7 @@ static class P {
             case "pair": return await Pair(name, le);
             case "unpair": return await Unpair(name, le);
             case "paired": return await Scan(name, le, true);
-            case "pads": return await Pads(a.Length > 1 ? int.Parse(a[1]) : 5);
+            case "pads": return await Pads(a.Length > 1 ? int.Parse(a[1]) : 5, a.Length > 2 ? double.Parse(a[2]) : 3.0);
             case "conns": return await Conns();
             default: Console.WriteLine("scan|pair|unpair|paired <name> [--le] ; pads <seconds>"); return 1;
         }
@@ -84,7 +84,7 @@ static class P {
         }
         return 0;
     }
-    static async Task<int> Pads(int seconds) {
+    static async Task<int> Pads(int seconds, double gapMs = 3.0) {
         // RawGameController sees any HID game controller, including ours.
         var sw = Stopwatch.StartNew();
         RawGameController pad = null;
@@ -141,14 +141,14 @@ static class P {
         Console.WriteLine($"clock ratio host/device {k:F5}");
         // Gap structure: when do >3 ms holes happen, and are they periodic?
         var gaps = new List<(double at, double len)>();
-        for (int i = 1; i < n; i++) if (hostT[i] - hostT[i - 1] > 3.0) gaps.Add((hostT[i - 1] - hostT[0], hostT[i] - hostT[i - 1]));
-        Console.WriteLine($"gaps > 3 ms: {gaps.Count} ({gaps.Count / (double)seconds:F1}/s), total {gaps.Sum(g => g.len):F0} ms of {seconds * 1000} ms");
+        for (int i = 1; i < n; i++) if (hostT[i] - hostT[i - 1] > gapMs) gaps.Add((hostT[i - 1] - hostT[0], hostT[i] - hostT[i - 1]));
+        Console.WriteLine($"gaps > {gapMs} ms: {gaps.Count} ({gaps.Count / (double)seconds:F1}/s), total {gaps.Sum(g => g.len):F0} ms of {seconds * 1000} ms");
         if (gaps.Count > 2) {
             var spacing = new List<double>();
             for (int i = 1; i < gaps.Count; i++) spacing.Add(gaps[i].at - gaps[i - 1].at);
             Pct("spacing between gaps ms", spacing);
             Pct("gap length ms", gaps.Select(g => g.len).ToList());
-            Console.WriteLine("first gaps (t ms: len): " + string.Join("  ", gaps.Take(14).Select(g => $"{g.at:F0}:{g.len:F1}")));
+            Console.WriteLine("first gaps (t ms: len): " + string.Join("  ", gaps.Take(40).Select(g => $"{g.at:F0}:{g.len:F1}")));
         }
         return 0;
     }

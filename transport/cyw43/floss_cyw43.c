@@ -1,4 +1,4 @@
-/*
+﻿/*
  * FLOSS - Free, Lightweight, Open Short-range Stack
  * SPDX-License-Identifier: Unlicense
  *

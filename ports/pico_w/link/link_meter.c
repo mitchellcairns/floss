@@ -85,12 +85,34 @@ static struct {
     /* jitter samples: x = ms since window start, y = latency - first latency */
     bool have_base;
     uint32_t base;
+} rx;
+
+/*
+ * Two sample buffers: arrivals go into buf[active] while the previous
+ * window's buffer is analysed a slice at a time by rx_meter_jitter_step(),
+ * so closing a window never blocks the main loop (the drift fit over a few
+ * thousand samples took ~10 ms on the Cortex-M0+ when done in one go, long
+ * enough to stall the radio link).
+ */
+typedef struct {
     uint32_t n;
     uint16_t x_ms[RX_SAMPLES];
     int32_t y_us[RX_SAMPLES];
-} rx;
+} sample_buf_t;
+static sample_buf_t bufs[2];
+static uint8_t active;
 
 static meter_hist_t jitter;
+
+/* Incremental jitter job over bufs[active ^ 1]. */
+#define JOB_SLICE 256u
+static struct {
+    bool running;
+    uint8_t phase;      /* 0 min first half, 1 min second half, 2 min residual, 3 histogram */
+    uint32_t i, n, half, ia, ib;
+    int32_t slope_q16;  /* us per ms, Q16, clamped to +-0.25 */
+    int32_t rmin;
+} job;
 
 void rx_meter_add(uint32_t t_pad_us, uint32_t t_rx_us, uint16_t lost) {
     if (!rx.started) {
@@ -111,11 +133,12 @@ void rx_meter_add(uint32_t t_pad_us, uint32_t t_rx_us, uint16_t lost) {
         rx.base = offset;
         rx.have_base = true;
     }
-    if (rx.n < RX_SAMPLES) {
+    sample_buf_t *b = &bufs[active];
+    if (b->n < RX_SAMPLES) {
         uint32_t ms = (t_rx_us - rx.start_us) / 1000u;
-        rx.x_ms[rx.n] = (uint16_t)(ms > UINT16_MAX ? UINT16_MAX : ms);
-        rx.y_us[rx.n] = (int32_t)(offset - rx.base);
-        rx.n++;
+        b->x_ms[b->n] = (uint16_t)(ms > UINT16_MAX ? UINT16_MAX : ms);
+        b->y_us[b->n] = (int32_t)(offset - rx.base);
+        b->n++;
     }
 }
 
@@ -123,45 +146,73 @@ void rx_meter_link_reset(void) {
     rx.have_prev = false;
 }
 
-/* Jitter of the stored samples into `jitter`; false if too few. */
-static bool compute_jitter(void) {
-    meter_hist_reset(&jitter);
-    uint32_t n = rx.n;
-    if (n < JITTER_MIN_SAMPLES) {
+/* Residual of sample i above the drift line through sample ia (32-bit math only). */
+static int32_t residual(const sample_buf_t *b, uint32_t i) {
+    int32_t dx = (int32_t)b->x_ms[i] - (int32_t)b->x_ms[job.ia];
+    return b->y_us[i] - (b->y_us[job.ia] + (int32_t)((job.slope_q16 * dx) >> 16));
+}
+
+bool rx_meter_jitter_step(rx_meter_result_t *r) {
+    if (!job.running) {
+        return true;
+    }
+    const sample_buf_t *b = &bufs[active ^ 1u];
+    uint32_t end = job.i + JOB_SLICE;
+    switch (job.phase) {
+    case 0: /* lowest latency in the first half */
+        for (; job.i < job.half && job.i < end; job.i++) {
+            if (b->y_us[job.i] < b->y_us[job.ia]) {
+                job.ia = job.i;
+            }
+        }
+        if (job.i >= job.half) {
+            job.phase = 1;
+            job.ib = job.half;
+        }
         return false;
-    }
-    /* Lowest latency in each half of the window. */
-    uint32_t half = n / 2u, ia = 0, ib = half;
-    for (uint32_t i = 1; i < half; i++) {
-        if (rx.y_us[i] < rx.y_us[ia]) {
-            ia = i;
+    case 1: /* ... and in the second half: the two minima define the drift line */
+        for (; job.i < job.n && job.i < end; job.i++) {
+            if (b->y_us[job.i] < b->y_us[job.ib]) {
+                job.ib = job.i;
+            }
         }
-    }
-    for (uint32_t i = half + 1u; i < n; i++) {
-        if (rx.y_us[i] < rx.y_us[ib]) {
-            ib = i;
+        if (job.i >= job.n) {
+            int32_t dx = (int32_t)b->x_ms[job.ib] - (int32_t)b->x_ms[job.ia];
+            int32_t dy = b->y_us[job.ib] - b->y_us[job.ia];
+            int32_t q = dx > 0 ? (int32_t)(((int64_t)dy << 16) / dx) : 0; /* once per window */
+            /* Crystal drift is a few us per second; clamp so x * slope stays in 32 bits. */
+            job.slope_q16 = q > 16384 ? 16384 : q < -16384 ? -16384 : q;
+            job.phase = 2;
+            job.i = 0;
+            job.rmin = INT32_MAX;
         }
-    }
-    int64_t slope_q16 = 0; /* us per ms, Q16 */
-    int32_t dx = (int32_t)rx.x_ms[ib] - (int32_t)rx.x_ms[ia];
-    if (dx > 0) {
-        slope_q16 = ((int64_t)rx.y_us[ib] - rx.y_us[ia]) * 65536 / dx;
-    }
-    /* Residuals above the drift line; the smallest becomes 0. */
-    int64_t rmin = INT64_MAX;
-    for (uint32_t i = 0; i < n; i++) {
-        int64_t line = rx.y_us[ia] + slope_q16 * ((int32_t)rx.x_ms[i] - (int32_t)rx.x_ms[ia]) / 65536;
-        int64_t r = rx.y_us[i] - line;
-        if (r < rmin) {
-            rmin = r;
+        return false;
+    case 2: /* smallest residual becomes 0 */
+        for (; job.i < job.n && job.i < end; job.i++) {
+            int32_t res = residual(b, job.i);
+            if (res < job.rmin) {
+                job.rmin = res;
+            }
         }
+        if (job.i >= job.n) {
+            job.phase = 3;
+            job.i = 0;
+        }
+        return false;
+    default: /* histogram of residuals */
+        for (; job.i < job.n && job.i < end; job.i++) {
+            meter_hist_add(&jitter, (uint32_t)(residual(b, job.i) - job.rmin));
+        }
+        if (job.i < job.n) {
+            return false;
+        }
+        job.running = false;
+        r->jitter_valid = true;
+        r->jitter_p50 = meter_hist_percentile(&jitter, 50);
+        r->jitter_p99 = meter_hist_percentile(&jitter, 99);
+        r->jitter_max = jitter.max_us;
+        return true;
     }
-    for (uint32_t i = 0; i < n; i++) {
-        int64_t line = rx.y_us[ia] + slope_q16 * ((int32_t)rx.x_ms[i] - (int32_t)rx.x_ms[ia]) / 65536;
-        int64_t r = rx.y_us[i] - line - rmin;
-        meter_hist_add(&jitter, r > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)r);
-    }
-    return true;
 }
 
 void rx_meter_finish(uint32_t now_us, rx_meter_result_t *r) {
@@ -172,12 +223,19 @@ void rx_meter_finish(uint32_t now_us, rx_meter_result_t *r) {
     r->interval_p50 = meter_hist_percentile(&rx.interval, 50);
     r->interval_p99 = meter_hist_percentile(&rx.interval, 99);
     r->interval_max = rx.interval.max_us;
-    r->jitter_valid = compute_jitter();
-    if (r->jitter_valid) {
-        r->jitter_p50 = meter_hist_percentile(&jitter, 50);
-        r->jitter_p99 = meter_hist_percentile(&jitter, 99);
-        r->jitter_max = jitter.max_us;
-    }
+
+    /* Freeze this window's samples and analyse them incrementally. */
+    active ^= 1u;
+    const sample_buf_t *b = &bufs[active ^ 1u];
+    meter_hist_reset(&jitter);
+    job.running = b->n >= JITTER_MIN_SAMPLES;
+    job.phase = 0;
+    job.i = 1;
+    job.n = b->n;
+    job.half = b->n / 2u;
+    job.ia = 0;
+    job.ib = job.half;
+    bufs[active].n = 0;
 
     /* Next window (the interval chain continues across windows). */
     rx.started = true;
@@ -186,5 +244,4 @@ void rx_meter_finish(uint32_t now_us, rx_meter_result_t *r) {
     rx.lost = 0;
     meter_hist_reset(&rx.interval);
     rx.have_base = false;
-    rx.n = 0;
 }

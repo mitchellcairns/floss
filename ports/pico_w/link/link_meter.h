@@ -63,8 +63,14 @@ void rx_meter_add(uint32_t t_pad_us, uint32_t t_rx_us, uint16_t lost);
 /** The link dropped: the next arrival starts a new interval chain. */
 void rx_meter_link_reset(void);
 
-/** Compute the window that ends at now_us and start the next one. */
+/**
+ * Close the window that ends at now_us and start the next one. Counts and
+ * interval percentiles are filled at once; jitter is computed afterwards in
+ * small slices: call rx_meter_jitter_step() once per main-loop pass until it
+ * returns true (jitter_valid stays false if the window had too few samples).
+ */
 void rx_meter_finish(uint32_t now_us, rx_meter_result_t *r);
+bool rx_meter_jitter_step(rx_meter_result_t *r);
 
 #ifdef __cplusplus
 }
