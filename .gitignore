@@ -10,3 +10,4 @@ build-*/
 *.btsnoop
 __pycache__/
 .vscode/
+.claude/
