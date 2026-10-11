@@ -35,8 +35,11 @@ extern "C" {
 #define FLOSS_COD_MINOR_GAMEPAD    (0x02ul << 2)
 #define FLOSS_COD_MINOR_KEYBOARD   (0x10ul << 2)
 #define FLOSS_COD_MINOR_POINTING   (0x20ul << 2)
-/** Ready-made: a gamepad (0x002508). */
-#define FLOSS_COD_GAMEPAD (FLOSS_COD_MAJOR_PERIPHERAL | FLOSS_COD_MINOR_GAMEPAD)
+/**
+ * Ready-made: a gamepad (0x002508). Includes the limited-discoverable service
+ * bit, which is what commercial controllers advertise and some hosts filter on.
+ */
+#define FLOSS_COD_GAMEPAD (FLOSS_COD_SERVICE_LIMITED_DISCOVERABLE | FLOSS_COD_MAJOR_PERIPHERAL | FLOSS_COD_MINOR_GAMEPAD)
 
 /* ------------------------------------------------------------------------ */
 /* Events to the application                                                */
