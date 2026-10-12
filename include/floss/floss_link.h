@@ -141,6 +141,14 @@ typedef struct {
     bool classic_store_keys;
     /** Connecting side: poll latency requested with QoS setup after connecting (us). Default 1250. */
     uint32_t classic_poll_us;
+    /**
+     * Pad: the radio drops an input report it could not deliver within this
+     * many ms instead of retrying it (automatic flush timeout; 0 = retry until
+     * delivered). Paced at one report per slot pair, the next report is newer
+     * than any retry could be, and a retry delays every report behind it.
+     * 1 = drop on the first failure. Default 0.
+     */
+    uint16_t classic_flush_timeout_ms;
     /** Power: enter sniff after this many ms without input changes (0 = never). Default 0. */
     uint32_t classic_idle_ms;
     /** Power: sniff interval (slots) used while idle. Default 16 (10 ms). */

@@ -578,6 +578,9 @@ static void chan_on_open(floss_l2cap_chan_t *ch, uint16_t status) {
         floss_gap_set_scan(false, false); /* page scan steals radio time from the link */
     }
     if (is_pad()) {
+        if (cfg()->classic_flush_timeout_ms) {
+            floss_gap_set_flush_timeout(C.handle, cfg()->classic_flush_timeout_ms);
+        }
         if (cfg()->classic_idle_ms) {
             floss_gap_set_link_policy(C.handle, FLOSS_LINK_POLICY_SNIFF);
             C.last_change_us = floss_hal_time_us();
