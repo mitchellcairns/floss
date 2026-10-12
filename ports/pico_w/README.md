@@ -222,7 +222,7 @@ Both boards must use the same transport, chosen at runtime and kept in flash
 
 | | Classic (`c`) | LE (`e`) |
 |---|---|---|
-| Who connects | dongle pages the pad | dongle scans, pad advertises |
+| Who connects | dongle pages the pad (`classic_pad_connects`: the pad pages the dongle) | dongle scans, pad advertises |
 | Reports | one per 1.25 ms poll, up to 800/s | one per 7.5 ms connection event, 133/s |
 | Data | custom L2CAP channel | notifications of the link service |
 

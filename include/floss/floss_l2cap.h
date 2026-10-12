@@ -40,6 +40,26 @@ extern "C" {
 /** L2CAP basic header length. */
 #define FLOSS_L2CAP_HDR_LEN 4
 
+/*
+ * Statuses passed to on_open() when a channel does not open. Connection
+ * Response results come from the peer (0x0001..0x00FF); the 0xFFxx values are
+ * local outcomes and never collide with them or with HCI reasons.
+ */
+#define FLOSS_L2CAP_CONN_SUCCESS        0x0000
+#define FLOSS_L2CAP_CONN_PENDING        0x0001
+#define FLOSS_L2CAP_CONN_PSM_UNSUPP     0x0002 /**< peer refused: no such PSM */
+#define FLOSS_L2CAP_CONN_SECURITY_BLOCK 0x0003 /**< peer refused: security */
+#define FLOSS_L2CAP_CONN_NO_RESOURCES   0x0004 /**< peer refused: no resources */
+#define FLOSS_L2CAP_CONN_INVALID_SCID   0x0006
+#define FLOSS_L2CAP_CONN_SCID_IN_USE    0x0007
+
+#define FLOSS_L2CAP_STATUS_TIMEOUT       0xFF01 /**< peer never answered a request (RTX) */
+#define FLOSS_L2CAP_STATUS_REMOTE_CLOSED 0xFF02 /**< peer disconnected before open */
+#define FLOSS_L2CAP_STATUS_CONFIG_FAILED 0xFF03 /**< configuration could not converge */
+#define FLOSS_L2CAP_STATUS_REJECTED      0xFF04 /**< peer sent Command Reject */
+#define FLOSS_L2CAP_STATUS_PROTOCOL      0xFF05 /**< malformed response */
+#define FLOSS_L2CAP_STATUS_ABORTED       0xFF06 /**< generic local abort */
+
 /** Security a PSM requires before the channel is accepted. */
 typedef enum {
     FLOSS_SEC_NONE = 0,       /**< no requirement (SDP) */
@@ -113,6 +133,17 @@ bool floss_l2cap_can_send_now(const floss_l2cap_chan_t *chan);
 
 /** Find an open channel by link and PSM (NULL if none). */
 floss_l2cap_chan_t *floss_l2cap_find(uint16_t handle, uint16_t psm);
+
+/**
+ * Called when the peer addresses a dynamic channel we do not have (a
+ * Configuration or Disconnection Request for an unknown CID, which is answered
+ * with Command Reject "invalid CID"). A peer that restarted its stack but kept
+ * the baseband link does exactly this, so an application can treat it as a
+ * stale link and drop it. Runs inside floss_poll(): do not re-initialise the
+ * stack from the hook. Reset by floss_init(); NULL clears it.
+ */
+typedef void (*floss_l2cap_unknown_cid_fn)(uint16_t handle, uint16_t cid);
+void floss_l2cap_set_unknown_cid_hook(floss_l2cap_unknown_cid_fn fn);
 
 /* ------------------------------------------------------------------------ */
 /* Lifecycle (called by floss.c)                                            */

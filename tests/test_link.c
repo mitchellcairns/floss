@@ -88,7 +88,12 @@ static void cb_output(uint8_t id, const uint8_t *data, uint8_t len) {
     g_cb.out_len = len;
     memcpy(g_cb.out_data, data, len);
 }
+static uint32_t g_tick_us[64];
+
 static void cb_tick(void) {
+    if (g_cb.ticks < 64) {
+        g_tick_us[g_cb.ticks] = floss_hal_time_us();
+    }
     g_cb.ticks++;
 }
 
@@ -207,6 +212,9 @@ TEST(config_defaults) {
     ASSERT_TRUE(c.le_2m_phy);
     ASSERT_EQ(c.ping_period_ms, 0);
     ASSERT_TRUE(c.auto_reconnect);
+    ASSERT_FALSE(c.classic_pad_connects);
+    ASSERT_TRUE(c.classic_store_keys);
+    ASSERT_NULL(c.peer_name);
     ASSERT_NOT_NULL(c.name);
     floss_link_config_defaults(&c, FLOSS_LINK_ROLE_PAD, FLOSS_LINK_LE);
     ASSERT_EQ(c.report_interval_us, FLOSS_LINK_INTERVAL_CONN);
@@ -998,6 +1006,351 @@ TEST(le_dongle_flow) {
 
 #endif /* FLOSS_ENABLE_LE */
 
+/* ------------------------------------------------------------------------ */
+/* Classic: the pad connects (classic_pad_connects), keys or none            */
+/* ------------------------------------------------------------------------ */
+
+/** A third remote, for "strongest answer" choices. */
+static const floss_addr_t k_third = {{0x03, 0x00, 0x00, 0x5D, 0x05, 0xF1}};
+
+/** A link device the sim answers inquiries for (name, signal strength, link UUID or not). */
+static void add_sim_dev(const floss_addr_t *addr, const char *name, int8_t rssi, bool with_uuid) {
+    uint8_t eir[64];
+    uint8_t n = 0;
+    size_t nl = strlen(name);
+    eir[n++] = (uint8_t)(nl + 1);
+    eir[n++] = FLOSS_EIR_NAME_COMPLETE;
+    memcpy(&eir[n], name, nl);
+    n = (uint8_t)(n + nl);
+    if (with_uuid) {
+        eir[n++] = 17;
+        eir[n++] = FLOSS_EIR_UUID128_ALL;
+        for (int i = 0; i < 16; i++) {
+            eir[n++] = floss_link_uuid_service[15 - i];
+        }
+    }
+    ASSERT_NOT_NULL(floss_sim_inquiry_add(addr, 0, rssi, eir, n));
+}
+
+static const floss_addr_t *g_want;
+
+static bool cond_chan_to(void *arg) {
+    (void)arg;
+    const floss_sim_link_t *l = floss_sim_link_by_addr(g_want);
+    if (!l || l->state != FLOSS_SIM_LINK_OPEN) {
+        return false;
+    }
+    floss_sim_chan_t *c = floss_sim_chan_find(l->handle, FLOSS_LINK_PSM);
+    if (c && c->state == FLOSS_SIM_CHAN_OPEN) {
+        g_dch = c;
+        g_dh = l->handle;
+        return true;
+    }
+    return false;
+}
+
+/** The stack connected to `who` and opened the link PSM; the session is up. */
+static void wait_session_to(const floss_addr_t *who) {
+    g_want = who;
+    /* Up to a page timeout and a search round of fake time. */
+    ASSERT_TRUE(floss_sim_pump_until(cond_chan_to, NULL, 300000));
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 200));
+}
+
+static void tweak_pad_connects(floss_link_config_t *c) {
+    c->classic_pad_connects = true;
+}
+
+static void tweak_pad_connects_no_keys(floss_link_config_t *c) {
+    c->classic_pad_connects = true;
+    c->classic_store_keys = false;
+}
+
+TEST(classic_pad_connects_to_dongle) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects);
+    add_sim_dev(&k_stranger, "Some Headset", -40, false); /* not a link device: ignored */
+    add_sim_dev(&k_peer, "FLOSS Dongle", -50, true);
+    /* No peer yet: the pad searches; it does not wait to be found. */
+    ASSERT_EQ(floss_link_state(), FLOSS_LINK_STATE_PAIRING);
+    ASSERT_NOT_NULL(floss_sim_expect_cmd(FLOSS_HCI_INQUIRY));
+    ASSERT_EQ(floss_sim_scan_enable(), 0x00);
+    wait_session_to(&k_peer);
+    ASSERT_NULL(floss_sim_link_by_addr(&k_stranger));
+
+    /* The pad runs the link: central, no role switch, QoS 1.25 ms, secured. */
+    const floss_sim_link_t *l = floss_sim_link(g_dh);
+    ASSERT_EQ(l->role, 0);
+    ASSERT_EQ(l->link_policy & FLOSS_LINK_POLICY_ROLE_SWITCH, 0);
+    const floss_sim_cmd_t *qos = floss_sim_cmd_last(FLOSS_HCI_QOS_SETUP);
+    ASSERT_NOT_NULL(qos);
+    ASSERT_EQ(floss_get_le32(&qos->params[12]), 1250);
+    ASSERT_TRUE(l->authenticated);
+    ASSERT_NE(l->encrypted, 0);
+    floss_link_peer_t p;
+    ASSERT_TRUE(floss_link_peer_get(&p));
+    ASSERT_TRUE(floss_addr_eq(&p.addr, &k_peer));
+    ASSERT_NOT_NULL(floss_gap_bond_find(&k_peer));
+
+    /* The data roles are unchanged: the pad says hello as a pad and sends INPUT. */
+    uint8_t pdu[64];
+    int n = recv_type(g_dch, FLOSS_LINK_PDU_HELLO, pdu, sizeof pdu);
+    ASSERT_EQ(n, 5);
+    ASSERT_EQ(pdu[2], FLOSS_LINK_ROLE_PAD);
+    uint8_t r[13];
+    memset(r, 0x5A, sizeof r);
+    ASSERT_EQ(floss_link_set_input(1, r, sizeof r), FLOSS_OK);
+    n = recv_type(g_dch, FLOSS_LINK_PDU_INPUT, pdu, sizeof pdu);
+    ASSERT_EQ(n, 22);
+    ASSERT_MEM_EQ(&pdu[9], r, 13);
+
+    /* Lost link: the pad pages its dongle again (no search) with the stored key. */
+    unsigned inquiries = floss_sim_inquiry_count();
+    ASSERT_EQ(floss_sim_remote_disconnect(g_dh, FLOSS_HCI_ERR_CONN_TIMEOUT), FLOSS_OK);
+    ASSERT_TRUE(wait_state(FLOSS_LINK_STATE_CONNECTING, 100));
+    wait_session_to(&k_peer);
+    ASSERT_EQ(g_cb.connected, 2);
+    ASSERT_EQ(floss_sim_inquiry_count(), inquiries);
+    floss_tc_assert_sim_clean();
+}
+
+static void tweak_dongle_waits(floss_link_config_t *c) {
+    c->classic_pad_connects = true;
+}
+
+TEST(classic_dongle_waits_for_pad) {
+    start_link(FLOSS_LINK_ROLE_DONGLE, FLOSS_LINK_CLASSIC, tweak_dongle_waits);
+    /* No peer: findable and connectable, under the dongle's own name; no searching. */
+    ASSERT_EQ(floss_link_state(), FLOSS_LINK_STATE_PAIRING);
+    ASSERT_EQ(floss_sim_scan_enable(), 0x03);
+    ASSERT_STR_EQ(floss_sim_local_name(), "FLOSS Dongle");
+    ASSERT_EQ(floss_sim_cmd_count(FLOSS_HCI_INQUIRY), 0);
+
+    floss_sim_chan_t *ch;
+    uint16_t h = dongle_connects(&k_peer, &ch); /* here the sim plays the pad */
+    ASSERT_EQ(ch->state, FLOSS_SIM_CHAN_OPEN);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    floss_sim_pump(5);
+    ASSERT_EQ(floss_sim_scan_enable(), 0x00); /* a busy dongle stays silent */
+    floss_link_peer_t p;
+    ASSERT_TRUE(floss_link_peer_get(&p));
+    ASSERT_TRUE(floss_addr_eq(&p.addr, &k_peer));
+
+    uint8_t pdu[64];
+    ASSERT_EQ(recv_type(ch, FLOSS_LINK_PDU_HELLO, pdu, sizeof pdu), 5);
+    ASSERT_EQ(pdu[2], FLOSS_LINK_ROLE_DONGLE);
+    const uint8_t r[4] = {1, 2, 3, 4};
+    build_input(pdu, 7, 1000, 1, r, sizeof r);
+    ASSERT_EQ(floss_sim_l2cap_send(ch, pdu, 9 + sizeof r), FLOSS_OK);
+    floss_sim_pump(10);
+    ASSERT_EQ(g_cb.inputs, 1);
+    ASSERT_MEM_EQ(g_cb.in_data, r, 4);
+
+    /* Link lost: connectable for our pad only, which comes back with its key. */
+    ASSERT_EQ(floss_sim_remote_disconnect(h, FLOSS_HCI_ERR_CONN_TIMEOUT), FLOSS_OK);
+    ASSERT_TRUE(wait_state(FLOSS_LINK_STATE_CONNECTING, 100));
+    floss_sim_pump(5);
+    ASSERT_EQ(floss_sim_scan_enable(), 0x02);
+    floss_sim_chan_t *sch;
+    dongle_connects(&k_stranger, &sch);
+    floss_sim_pump(20);
+    ASSERT_NE(sch->state, FLOSS_SIM_CHAN_OPEN);
+    dongle_connects(&k_peer, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    ASSERT_EQ(g_cb.connected, 2);
+    floss_tc_assert_sim_clean();
+}
+
+static void tweak_dongle_waits_no_keys(floss_link_config_t *c) {
+    c->classic_pad_connects = true;
+    c->classic_store_keys = false;
+}
+
+TEST(classic_no_keys_dongle_takes_any_pad) {
+    /* A peer record left over from a keyed setup must not narrow who may connect. */
+    const uint8_t old[9] = {1, FLOSS_LINK_CLASSIC, 0, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09};
+    floss_tc_sim_init(NULL); /* fresh RAM store for the record below */
+    ASSERT_EQ(floss_hal_store_write(FLOSS_LINK_STORE_KEY_PEER, old, sizeof old), FLOSS_OK);
+    start_link(FLOSS_LINK_ROLE_DONGLE, FLOSS_LINK_CLASSIC, tweak_dongle_waits_no_keys);
+    ASSERT_FALSE(floss_link_peer_get(NULL));
+    ASSERT_EQ(floss_link_state(), FLOSS_LINK_STATE_PAIRING);
+    ASSERT_EQ(floss_sim_scan_enable(), 0x03);
+
+    floss_sim_chan_t *ch;
+    uint16_t h = dongle_connects(&k_peer, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    ASSERT_EQ(floss_gap_bond_count(), 0); /* paired, nothing stored */
+    ASSERT_FALSE(floss_link_peer_get(NULL));
+    uint8_t rec[16];
+    ASSERT_EQ(floss_hal_store_read(FLOSS_LINK_STORE_KEY_PEER, rec, sizeof rec), FLOSS_ERR_NOT_FOUND);
+
+    /* Free again: findable, and the next pad is welcome without a pairing window. */
+    ASSERT_EQ(floss_sim_remote_disconnect(h, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED), FLOSS_OK);
+    ASSERT_TRUE(wait_state(FLOSS_LINK_STATE_PAIRING, 100));
+    floss_sim_pump(5);
+    ASSERT_EQ(floss_sim_scan_enable(), 0x03);
+    dongle_connects(&k_stranger, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    ASSERT_EQ(g_cb.connected, 2);
+    ASSERT_TRUE(floss_addr_eq(&g_cb.peer, &k_stranger));
+    ASSERT_EQ(floss_gap_bond_count(), 0);
+    floss_tc_assert_sim_clean();
+}
+
+TEST(classic_no_keys_pad_prefers_remembered_then_strongest) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
+    /* First time, nobody remembered: the strongest dongle of the round. */
+    add_sim_dev(&k_stranger, "FLOSS Dongle", -70, true);
+    add_sim_dev(&k_peer, "FLOSS Dongle", -40, true);
+    wait_session_to(&k_peer);
+    ASSERT_NULL(floss_sim_link_by_addr(&k_stranger));
+    ASSERT_EQ(floss_gap_bond_count(), 0);
+    floss_link_peer_t p;
+    ASSERT_TRUE(floss_link_peer_get(&p)); /* the address is remembered, no key */
+    ASSERT_TRUE(floss_addr_eq(&p.addr, &k_peer));
+    uint32_t pairings = floss_sim_cmd_count(FLOSS_HCI_IO_CAPABILITY_REQUEST_REPLY);
+    ASSERT_GE(pairings, 1);
+
+    /* Reconnect: the remembered dongle is paged first and pairs again. */
+    unsigned inquiries = floss_sim_inquiry_count();
+    ASSERT_EQ(floss_sim_remote_disconnect(g_dh, FLOSS_HCI_ERR_CONN_TIMEOUT), FLOSS_OK);
+    wait_session_to(&k_peer);
+    ASSERT_EQ(floss_sim_inquiry_count(), inquiries);
+    ASSERT_GT(floss_sim_cmd_count(FLOSS_HCI_IO_CAPABILITY_REQUEST_REPLY), pairings);
+    ASSERT_EQ(floss_gap_bond_count(), 0);
+
+    /* The remembered dongle is gone: any free one will do, the strongest. */
+    floss_sim_peer_set_present(&k_peer, false);
+    floss_sim_inquiry_clear();
+    add_sim_dev(&k_stranger, "FLOSS Dongle", -60, true);
+    add_sim_dev(&k_third, "FLOSS Dongle", -45, true);
+    ASSERT_EQ(floss_sim_remote_disconnect(g_dh, FLOSS_HCI_ERR_CONN_TIMEOUT), FLOSS_OK);
+    wait_session_to(&k_third);
+    ASSERT_NULL(floss_sim_link_by_addr(&k_stranger));
+    ASSERT_TRUE(floss_link_peer_get(&p));
+    ASSERT_TRUE(floss_addr_eq(&p.addr, &k_third));
+    ASSERT_EQ(floss_gap_bond_count(), 0);
+    floss_tc_assert_sim_clean();
+}
+
+TEST(classic_no_keys_pad_takes_remembered_at_once) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
+    add_sim_dev(&k_peer, "FLOSS Dongle", -60, true);
+    wait_session_to(&k_peer);
+    /* The remembered dongle is busy elsewhere for a while (no page answer), while a
+     * stronger one is around: the search still takes the remembered one when it
+     * answers in a round, without waiting for the round to end. */
+    floss_sim_peer_set_present(&k_peer, false);
+    ASSERT_EQ(floss_sim_remote_disconnect(g_dh, FLOSS_HCI_ERR_CONN_TIMEOUT), FLOSS_OK);
+    ASSERT_TRUE(wait_state(FLOSS_LINK_STATE_PAIRING, 400000)); /* page timed out: searching */
+    add_sim_dev(&k_third, "FLOSS Dongle", -30, false);       /* not a link device */
+    floss_sim_peer_set_present(&k_peer, true);
+    wait_session_to(&k_peer);
+    ASSERT_EQ(floss_gap_bond_count(), 0);
+    floss_tc_assert_sim_clean();
+}
+
+static void tweak_pad_2ms(floss_link_config_t *cfg) {
+    cfg->report_interval_us = 2000;
+}
+
+/** Gap between report ticks i-1 and i is want_us, give or take one pump step. */
+#define ASSERT_TICK_GAP(i, want_us)                    do {                                                   ASSERT_GE(tick_gap(i), (want_us) - 100u);          ASSERT_LE(tick_gap(i), (want_us) + 100u);      } while (0)
+
+/** Gap between report ticks i-1 and i. */
+static uint32_t tick_gap(unsigned i) {
+    return g_tick_us[i] - g_tick_us[i - 1];
+}
+
+static bool cond_tick_after(void *arg) {
+    return g_cb.ticks > *(unsigned *)arg;
+}
+
+/** Pump until the next report tick; returns the index of the tick after it. */
+static unsigned next_tick(void) {
+    unsigned t = g_cb.ticks;
+    ASSERT_TRUE(floss_sim_pump_until(cond_tick_after, &t, 100));
+    return g_cb.ticks;
+}
+
+static void tweak_pad_connects_fast_page(floss_link_config_t *cfg) {
+    tweak_pad_connects_no_keys(cfg);
+    cfg->classic_page_timeout_ms = 1280;
+}
+
+/** Bring the stack up with the link and return the Write Page Timeout it sent, before the link's
+ * own search starts (it soon fills the simulator's command log). */
+static uint16_t page_timeout_at_bringup(void (*tweak)(floss_link_config_t *)) {
+    memset(&g_gap, 0, sizeof g_gap);
+    g_transport = floss_tc_sim_init(NULL);
+    ASSERT_EQ(floss_init(&(floss_init_t){.transport = g_transport}), FLOSS_OK);
+    ASSERT_EQ(floss_gap_add_listener(gap_rec, NULL), FLOSS_OK);
+    floss_link_config_defaults(&g_cfg, FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC);
+    tweak(&g_cfg);
+    ASSERT_EQ(floss_link_init(&g_cfg, &k_cb), FLOSS_OK);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    ASSERT_TRUE(floss_sim_pump_until(cond_ready, NULL, 5000));
+    const floss_sim_cmd_t *pt = floss_sim_cmd_last(FLOSS_HCI_WRITE_PAGE_TIMEOUT);
+    ASSERT_NOT_NULL(pt);
+    return floss_get_le16(&pt->params[0]);
+}
+
+TEST(classic_page_timeout) {
+    ASSERT_EQ(page_timeout_at_bringup(tweak_pad_connects_no_keys), 0x2000);   /* GAP's 5.12 s */
+    ASSERT_EQ(page_timeout_at_bringup(tweak_pad_connects_fast_page), 0x0800); /* 1.28 s */
+    ASSERT_EQ(floss_gap_set_page_timeout(0), FLOSS_ERR_INVALID);
+}
+
+TEST(classic_pad_shift_phase) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_2ms);
+    ASSERT_EQ(floss_link_shift_phase(100), FLOSS_ERR_STATE); /* no session */
+    floss_sim_chan_t *ch;
+    dongle_connects(&k_peer, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    floss_sim_pump_us(10000);
+
+    /* Later: one gap grows by the shift, the period stays. Shifts go in just after a report. */
+    unsigned t = next_tick();
+    ASSERT_EQ(floss_link_shift_phase(500), FLOSS_OK);
+    floss_sim_pump_us(8000);
+    ASSERT_GE(g_cb.ticks, t + 3);
+    ASSERT_TICK_GAP(t, 2500u);
+    ASSERT_TICK_GAP(t + 1, 2000u);
+    ASSERT_TICK_GAP(t + 2, 2000u);
+
+    /* The next report's time, ahead of its tick */
+    uint32_t at;
+    ASSERT_TRUE(floss_link_next_report_at(&at));
+    unsigned before = g_cb.ticks;
+    while (g_cb.ticks == before) {
+        ASSERT_TRUE((int32_t)(floss_hal_time_us() - at) < 200); /* not past it without a tick */
+        floss_sim_pump(1);
+    }
+    ASSERT_TRUE((int32_t)(g_tick_us[before] - at) >= 0);
+    ASSERT_TRUE((int32_t)(g_tick_us[before] - at) <= 100);
+
+    /* Earlier. */
+    t = next_tick();
+    ASSERT_EQ(floss_link_shift_phase(-700), FLOSS_OK);
+    floss_sim_pump_us(8000);
+    ASSERT_GE(g_cb.ticks, t + 3);
+    ASSERT_TICK_GAP(t, 1300u);
+    ASSERT_TICK_GAP(t + 1, 2000u);
+}
+
+TEST(reinit_forgets_link) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
+    add_sim_dev(&k_peer, "FLOSS Dongle", -60, true);
+    wait_session_to(&k_peer);
+    ASSERT_NOT_NULL(floss_link_poll_hook);
+
+    /* The application restarts the stack for another profile: the old session must not be polled. */
+    g_transport = floss_tc_sim_init(NULL);
+    ASSERT_EQ(floss_init(&(floss_init_t){.transport = g_transport}), FLOSS_OK);
+    ASSERT_NULL(floss_link_poll_hook);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    floss_sim_pump(50); /* with the stale hook, this polled the old session */
+}
+
 static const floss_test_case_t tests[] = {
     TEST_CASE(config_defaults),
     TEST_CASE(eir_build_and_parse),
@@ -1010,6 +1363,14 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_dongle_jitter_and_drift),
     TEST_CASE(classic_dongle_reconnects),
     TEST_CASE(classic_dongle_ping_rtt_and_malformed),
+    TEST_CASE(classic_pad_connects_to_dongle),
+    TEST_CASE(classic_dongle_waits_for_pad),
+    TEST_CASE(classic_no_keys_dongle_takes_any_pad),
+    TEST_CASE(classic_no_keys_pad_prefers_remembered_then_strongest),
+    TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
+    TEST_CASE(reinit_forgets_link),
+    TEST_CASE(classic_pad_shift_phase),
+    TEST_CASE(classic_page_timeout),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),

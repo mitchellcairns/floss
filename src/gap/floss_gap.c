@@ -85,6 +85,7 @@ static struct {
     uint16_t pscan_window;
     bool pscan_interlaced;
     uint16_t default_policy;
+    uint16_t page_timeout; /* slots */
 
     /* lifecycle */
     gap_step_t step;
@@ -354,7 +355,7 @@ static void ready_next(void)
             err = floss_gap_eir_send(ready_cmd_done, NULL);
             break;
         case STEP_PAGE_TIMEOUT:
-            err = send_u16(FLOSS_HCI_WRITE_PAGE_TIMEOUT, GAP_PAGE_TIMEOUT, ready_cmd_done);
+            err = send_u16(FLOSS_HCI_WRITE_PAGE_TIMEOUT, s_gap.page_timeout, ready_cmd_done);
             break;
         case STEP_CONN_ACCEPT_TIMEOUT:
             err = send_u16(FLOSS_HCI_WRITE_CONNECTION_ACCEPT_TIMEOUT, GAP_CONN_ACCEPT_TIMEOUT, ready_cmd_done);
@@ -367,6 +368,7 @@ static void ready_next(void)
             s_gap.ready = true;
             FLOSS_LOGI(GAP, "ready (scan: %s%s)", s_gap.discoverable ? "discoverable " : "",
                        s_gap.connectable ? "connectable" : "");
+            floss_hid_on_controller_ready();
             floss_gap_emit_simple(FLOSS_GAP_EVT_READY, FLOSS_GAP_NO_HANDLE, NULL, 0);
 #if FLOSS_ENABLE_LE
             floss_le_on_hci_ready();
@@ -416,6 +418,7 @@ void floss_gap_init(void)
     s_gap.pscan_interval = GAP_DEFAULT_PSCAN_INTERVAL;
     s_gap.pscan_window = GAP_DEFAULT_PSCAN_WINDOW;
     s_gap.pscan_interlaced = true; /* interlaced halves the time a host needs to page us */
+    s_gap.page_timeout = GAP_PAGE_TIMEOUT;
     s_gap.default_policy = FLOSS_LINK_POLICY_ROLE_SWITCH | FLOSS_LINK_POLICY_SNIFF;
     floss_timer_init(&s_gap.retry_timer, ready_retry, NULL);
     floss_timer_init(&s_gap.scan_timer, scan_retry, NULL);
@@ -504,6 +507,20 @@ floss_err_t floss_gap_set_page_scan(uint16_t interval, uint16_t window, bool int
         return err;
     }
     return send_u16x2(FLOSS_HCI_WRITE_PAGE_SCAN_ACTIVITY, interval, window, NULL);
+}
+
+floss_err_t floss_gap_set_page_timeout(uint16_t ms)
+{
+    /* Slots of 0.625 ms: ms * 8 / 5, rounded; at least one slot, at most 0xFFFF (~41 s). */
+    uint32_t slots = ((uint32_t)ms * 8u + 2u) / 5u;
+    if (ms == 0 || slots > 0xFFFFu) {
+        return FLOSS_ERR_INVALID;
+    }
+    s_gap.page_timeout = (uint16_t)slots;
+    if (!s_gap.applying) {
+        return FLOSS_OK;
+    }
+    return send_u16(FLOSS_HCI_WRITE_PAGE_TIMEOUT, s_gap.page_timeout, NULL);
 }
 
 /* ======================================================================== */

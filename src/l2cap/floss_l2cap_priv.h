@@ -84,14 +84,7 @@ extern "C" {
 #define FLOSS_L2CAP_REJ_MTU_EXCEEDED   0x0001
 #define FLOSS_L2CAP_REJ_INVALID_CID    0x0002
 
-/* Connection Response results (also reported through on_open on failure) */
-#define FLOSS_L2CAP_CONN_SUCCESS        0x0000
-#define FLOSS_L2CAP_CONN_PENDING        0x0001
-#define FLOSS_L2CAP_CONN_PSM_UNSUPP     0x0002
-#define FLOSS_L2CAP_CONN_SECURITY_BLOCK 0x0003
-#define FLOSS_L2CAP_CONN_NO_RESOURCES   0x0004
-#define FLOSS_L2CAP_CONN_INVALID_SCID   0x0006
-#define FLOSS_L2CAP_CONN_SCID_IN_USE    0x0007
+/* Connection Response results: public, in floss_l2cap.h (on_open statuses). */
 
 /* Connection Response status (when result == pending) */
 #define FLOSS_L2CAP_CONN_STATUS_NONE      0x0000
@@ -121,17 +114,7 @@ extern "C" {
 #define FLOSS_L2CAP_INFO_SUCCESS       0x0000
 #define FLOSS_L2CAP_INFO_NOT_SUPPORTED 0x0001
 
-/* ------------------------------------------------------------------------ */
-/* Local failure statuses passed to on_open() (never collide with L2CAP     */
-/* results 0x0000..0x00FF or HCI reasons 0x00..0xFF)                        */
-/* ------------------------------------------------------------------------ */
-
-#define FLOSS_L2CAP_STATUS_TIMEOUT       0xFF01 /**< peer never answered a request */
-#define FLOSS_L2CAP_STATUS_REMOTE_CLOSED 0xFF02 /**< peer disconnected before open */
-#define FLOSS_L2CAP_STATUS_CONFIG_FAILED 0xFF03 /**< configuration could not converge */
-#define FLOSS_L2CAP_STATUS_REJECTED      0xFF04 /**< peer sent Command Reject */
-#define FLOSS_L2CAP_STATUS_PROTOCOL      0xFF05 /**< malformed response */
-#define FLOSS_L2CAP_STATUS_ABORTED       0xFF06 /**< generic local abort */
+/* Local failure statuses passed to on_open(): public, in floss_l2cap.h. */
 
 /* ------------------------------------------------------------------------ */
 /* Channel slot                                                             */

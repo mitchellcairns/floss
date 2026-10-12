@@ -260,9 +260,12 @@ static struct {
     bool app_connected;       /**< on_connected delivered for this link */
 
     bool reconnecting;        /**< we are paging the host / opening its channels */
+    bool page_cancelled;      /**< we cancelled a page to cancelled_addr; if it completes anyway, close it */
+    floss_addr_t cancelled_addr;
     uint8_t reconnect_retries;
     bool auth_failed;         /**< host rejected our key: be discoverable again */
     bool local_teardown;      /**< we are closing the session */
+    uint16_t chan_fail_status; /**< on_open status of the last HID channel that failed */
     bool link_disc_sent;
 
     uint8_t protocol;         /**< FLOSS_HID_PROTOCOL_* */
@@ -727,6 +730,10 @@ static void hid_start_pacing(void) {
         hid.tick_deadline = floss_hal_time_us() + hid.interval_us;
         floss_timer_start_at(&hid.tick_timer, hid.tick_deadline);
     }
+}
+
+bool floss_hid_can_send_now(void) {
+    return hid.cfg && hid.state == FLOSS_HID_STATE_CONNECTED && hid.intr_open && hid_link_ready();
 }
 
 floss_err_t floss_hid_send_input_now(uint8_t report_id, const uint8_t *data, uint16_t len) {
@@ -1225,8 +1232,23 @@ static void hid_end_session(void) {
     hid_apply_protocol(FLOSS_HID_PROTOCOL_REPORT);
 }
 
+/** Scan enable, unless the application manages it (app_controls_scan). */
+static void hid_set_scan(bool discoverable, bool connectable) {
+    if (!hid.cfg->app_controls_scan) {
+        floss_gap_set_scan(discoverable, connectable);
+    }
+}
+
+/** Security the HID channels need (none with no_security). */
+static floss_sec_level_t hid_sec(void) {
+    return hid.cfg->no_security ? FLOSS_SEC_NONE : FLOSS_SEC_ENCRYPTED;
+}
+
 /** Connectable always; discoverable only if there is nobody to go back to. */
 static void hid_become_visible(void) {
+    if (hid.cfg->app_controls_scan) {
+        return;
+    }
     bool discoverable = hid.cfg->auto_discoverable && (floss_gap_bond_count() == 0 || hid.auth_failed);
     floss_gap_set_scan(discoverable, true);
     FLOSS_LOGI(HID, "waiting for host (%s)", discoverable ? "discoverable" : "connectable");
@@ -1257,7 +1279,7 @@ static void hid_session_up(void) {
     if (hid.cfg->qos_latency_us) {
         floss_gap_qos_setup(hid.handle, hid.cfg->qos_latency_us, 0);
     }
-    floss_gap_set_scan(false, FLOSS_HID_CONNECTABLE_WHILE_CONNECTED);
+    hid_set_scan(false, FLOSS_HID_CONNECTABLE_WHILE_CONNECTED);
 
     /* Send the current state of every report once, so the host does not
      * have to wait for the next change to know where the sticks are. */
@@ -1280,7 +1302,7 @@ static void hid_session_up(void) {
 static floss_err_t hid_open_interrupt(void) {
     floss_l2cap_chan_t *ch = NULL;
     floss_err_t err =
-        floss_l2cap_connect(hid.handle, FLOSS_PSM_HID_INTERRUPT, &hid_intr_ops, NULL, FLOSS_SEC_ENCRYPTED, &ch);
+        floss_l2cap_connect(hid.handle, FLOSS_PSM_HID_INTERRUPT, &hid_intr_ops, NULL, hid_sec(), &ch);
     if (err == FLOSS_OK) {
         hid.intr = ch;
     }
@@ -1346,11 +1368,14 @@ static void hid_teardown_timeout(floss_timer_t *t, void *arg) {
 
 /* ---- reconnection -------------------------------------------------------- */
 
-static void hid_reconnect_give_up(void) {
+static void hid_reconnect_give_up(uint8_t reason) {
     hid.reconnecting = false;
     hid.state = FLOSS_HID_STATE_IDLE;
     hid.handle = HID_NO_HANDLE;
     hid_become_visible();
+    if (hid.cb->on_connect_failed) {
+        hid.cb->on_connect_failed(reason, hid.chan_fail_status);
+    }
 }
 
 /** A reconnect attempt failed with HCI status/reason `status`. */
@@ -1362,7 +1387,7 @@ static void hid_reconnect_failed(uint8_t status) {
     if (hid_is_key_failure(status) || hid.auth_failed) {
         hid.auth_failed = true;
         FLOSS_LOGW(HID, "host rejected our key; pairing required");
-        hid_reconnect_give_up();
+        hid_reconnect_give_up(status);
         return;
     }
     if (hid.reconnect_retries < FLOSS_HID_RECONNECT_RETRIES) {
@@ -1373,13 +1398,13 @@ static void hid_reconnect_failed(uint8_t status) {
         return;
     }
     FLOSS_LOGI(HID, "host unreachable, giving up");
-    hid_reconnect_give_up();
+    hid_reconnect_give_up(status);
 }
 
 static void hid_open_control(void) {
     floss_l2cap_chan_t *ch = NULL;
     floss_err_t err =
-        floss_l2cap_connect(hid.handle, FLOSS_PSM_HID_CONTROL, &hid_ctrl_ops, NULL, FLOSS_SEC_ENCRYPTED, &ch);
+        floss_l2cap_connect(hid.handle, FLOSS_PSM_HID_CONTROL, &hid_ctrl_ops, NULL, hid_sec(), &ch);
     if (err != FLOSS_OK) {
         FLOSS_LOGW(HID, "cannot open control channel: %s", floss_err_str(err));
         hid_disconnect_link(); /* link down -> reconnect logic */
@@ -1397,6 +1422,7 @@ static void hid_page_host(void) {
         return;
     }
     hid.handle = HID_NO_HANDLE;
+    hid.page_cancelled = false;
     floss_err_t err = floss_gap_connect(&hid.host);
     if (err != FLOSS_OK) {
         FLOSS_LOGW(HID, "page failed to start: %s", floss_err_str(err));
@@ -1432,6 +1458,7 @@ floss_err_t floss_hid_connect(const floss_addr_t *host) {
     hid.reconnecting = true;
     hid.reconnect_retries = 0;
     hid.auth_failed = false;
+    hid.chan_fail_status = 0;
     hid_log_addr("reconnecting to", &hid.host);
     hid_page_host();
     return FLOSS_OK;
@@ -1454,6 +1481,8 @@ floss_err_t floss_hid_disconnect(void) {
             /* Still paging (or waiting to retry): cancel. */
             floss_timer_stop(&hid.reconnect_timer);
             floss_gap_connect_cancel(&hid.host);
+            hid.page_cancelled = true;
+            hid.cancelled_addr = hid.host;
             hid.reconnecting = false;
             hid.state = FLOSS_HID_STATE_IDLE;
             hid_become_visible();
@@ -1511,6 +1540,7 @@ static void hid_chan_open(floss_l2cap_chan_t *ch, uint16_t status, bool is_ctrl)
             *slot = NULL;
         }
         FLOSS_LOGW(HID, "%s channel failed to open (0x%04X)", name, status);
+        hid.chan_fail_status = status;
         if (hid.state == FLOSS_HID_STATE_CONNECTING) {
             hid_start_local_teardown(); /* link drop feeds the reconnect retry logic */
         } else if (hid.state == FLOSS_HID_STATE_DISCONNECTING && hid.local_teardown) {
@@ -1552,6 +1582,8 @@ static void hid_chan_open(floss_l2cap_chan_t *ch, uint16_t status, bool is_ctrl)
             /* Another host connected while we were paging ours: serve it. */
             floss_timer_stop(&hid.reconnect_timer);
             floss_gap_connect_cancel(&hid.host);
+            hid.page_cancelled = true;
+            hid.cancelled_addr = hid.host;
             hid.reconnecting = false;
         }
         hid.handle = ch->handle;
@@ -1642,12 +1674,20 @@ static const floss_l2cap_ops_t hid_intr_ops = {
 
 /* ---- GAP events ----------------------------------------------------------- */
 
-static void hid_on_ready(void) {
+void floss_hid_on_controller_ready(void) {
     /* Controller (re)started: any previous link is gone. */
-    hid_end_session();
+    if (hid.cfg) {
+        hid_end_session();
+    }
+}
+
+static void hid_on_ready(void) {
+    if (hid.state != FLOSS_HID_STATE_IDLE) {
+        return; /* the application already started a connect from its READY handler */
+    }
     const floss_bond_t *b = floss_gap_bond_last();
     if (hid.cfg->auto_reconnect && b) {
-        floss_gap_set_scan(false, true);
+        hid_set_scan(false, true);
         if (floss_hid_connect(&b->addr) == FLOSS_OK) {
             return;
         }
@@ -1672,13 +1712,20 @@ static void hid_on_link_up(const floss_gap_evt_t *evt) {
         }
         return;
     }
-    if (hid.state == FLOSS_HID_STATE_IDLE && c && c->initiator && floss_addr_eq(&evt->addr, &hid.host)) {
-        /* A page we cancelled completed anyway: nobody wants this link. */
-        floss_gap_disconnect(evt->handle, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED);
+    if (hid.page_cancelled && c && c->initiator && floss_addr_eq(&evt->addr, &hid.cancelled_addr)) {
+        /* A page we cancelled completed anyway: nobody wants this link. Links to the
+         * host that something else paged (RFCOMM, the application) are left alone. */
+        hid.page_cancelled = false;
+        if (hid.state == FLOSS_HID_STATE_IDLE || !floss_addr_eq(&evt->addr, &hid.host)) {
+            floss_gap_disconnect(evt->handle, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED);
+        }
     }
 }
 
 static void hid_on_connect_failed(const floss_gap_evt_t *evt) {
+    if (hid.page_cancelled && floss_addr_eq(&evt->addr, &hid.cancelled_addr)) {
+        hid.page_cancelled = false; /* the cancelled page is over */
+    }
     if (hid.reconnecting && hid.state == FLOSS_HID_STATE_CONNECTING && floss_addr_eq(&evt->addr, &hid.host)) {
         hid_reconnect_failed(evt->status);
     }
@@ -1713,7 +1760,7 @@ static void hid_on_link_down(const floss_gap_evt_t *evt) {
         floss_gap_bond_find(&host)) {
         /* Supervision timeout = we drifted out of range: try to get back. */
         if (floss_hid_connect(&host) == FLOSS_OK) {
-            floss_gap_set_scan(false, true);
+            hid_set_scan(false, true);
             return;
         }
     }
@@ -1828,7 +1875,15 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
         .report_descriptor = cfg->report_descriptor,
         .report_descriptor_len = cfg->report_descriptor_len,
     };
-    uint16_t len = floss_sdp_build_hid(hid_sdp_buf, sizeof(hid_sdp_buf), &sp);
+    uint16_t len;
+    if (cfg->sdp_record) {
+        len = cfg->sdp_record_len <= sizeof(hid_sdp_buf) ? cfg->sdp_record_len : 0;
+        if (len) {
+            memcpy(hid_sdp_buf, cfg->sdp_record, len);
+        }
+    } else {
+        len = floss_sdp_build_hid(hid_sdp_buf, sizeof(hid_sdp_buf), &sp);
+    }
     if (len == 0) {
         FLOSS_LOGE(HID, "HID SDP record does not fit");
         return FLOSS_ERR_NOMEM;
@@ -1863,9 +1918,9 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     floss_gap_set_name(name);
     floss_gap_set_class(cfg->class_of_device ? cfg->class_of_device : hid_cod_for_subclass(cfg->subclass));
 
-    err = floss_l2cap_register_psm(FLOSS_PSM_HID_CONTROL, &hid_ctrl_ops, NULL, FLOSS_SEC_ENCRYPTED);
+    err = floss_l2cap_register_psm(FLOSS_PSM_HID_CONTROL, &hid_ctrl_ops, NULL, hid_sec());
     if (err == FLOSS_OK) {
-        err = floss_l2cap_register_psm(FLOSS_PSM_HID_INTERRUPT, &hid_intr_ops, NULL, FLOSS_SEC_ENCRYPTED);
+        err = floss_l2cap_register_psm(FLOSS_PSM_HID_INTERRUPT, &hid_intr_ops, NULL, hid_sec());
     }
     if (err == FLOSS_OK) {
         err = floss_gap_add_listener(hid_gap_event, NULL);
@@ -1878,7 +1933,18 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     return FLOSS_OK;
 }
 
+void floss_hid_reset(void) {
+    memset(&hid, 0, sizeof(hid));
+    memset(hid_slots, 0, sizeof(hid_slots));
+    hid_pending = 0;
+    hid.cb = &hid_no_callbacks;
+    hid.handle = HID_NO_HANDLE;
+}
+
 void floss_hid_poll(void) {
+    if (!hid.cfg) {
+        return;
+    }
     if (hid.ctrl_tx_len) {
         hid_ctrl_flush();
     }

@@ -83,6 +83,10 @@ floss_err_t floss_init(const floss_init_t *init)
     floss_gap_init();
     floss_l2cap_init();
     floss_sdp_init();
+    floss_hid_reset();
+#if FLOSS_ENABLE_LINK
+    floss_link_reset();
+#endif
 #if FLOSS_ENABLE_LE
     floss_le_init();
     floss_smp_init();

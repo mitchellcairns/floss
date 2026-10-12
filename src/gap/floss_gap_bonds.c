@@ -234,6 +234,16 @@ const floss_bond_t *floss_gap_bond_find(const floss_addr_t *addr)
     return slot < 0 ? NULL : &s_bonds.bond[slot];
 }
 
+floss_err_t floss_gap_bond_add(const floss_addr_t *addr, const floss_link_key_t *key)
+{
+    static const floss_addr_t zero;
+    if (!addr || !key || floss_addr_eq(addr, &zero)) {
+        return FLOSS_ERR_INVALID;
+    }
+    floss_gap_bond_save(addr, key, 0);
+    return FLOSS_OK;
+}
+
 floss_err_t floss_gap_bond_delete(const floss_addr_t *addr)
 {
     if (!addr) {

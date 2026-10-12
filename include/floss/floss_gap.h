@@ -119,6 +119,12 @@ floss_err_t floss_gap_set_scan(bool discoverable, bool connectable);
  */
 floss_err_t floss_gap_set_page_scan(uint16_t interval, uint16_t window, bool interlaced);
 
+/**
+ * How long a page (an outgoing connection) tries before failing, in ms. Default 5120.
+ * Kept across controller restarts.
+ */
+floss_err_t floss_gap_set_page_timeout(uint16_t ms);
+
 /** Rebuild and resend the Extended Inquiry Response (name + service UUIDs). Called automatically. */
 floss_err_t floss_gap_update_eir(void);
 
@@ -199,11 +205,20 @@ typedef struct {
     bool secure_connections;  /**< enable SC host support if controller has it (default true) */
     const char *legacy_pin;   /**< for pre-2.1 hosts, default "0000" */
     bool pairable;            /**< accept NEW pairings (default true). Bonded peers always allowed. */
+    /**
+     * Optional legacy PIN provider, for PINs that are binary (may contain zero
+     * bytes) or differ per peer. Write up to 16 bytes into pin and return the
+     * length; 0 refuses the pairing. When NULL, legacy_pin is used. Called
+     * from floss_poll(); `pairable` still applies.
+     */
+    uint8_t (*pin_handler)(const floss_addr_t *peer, uint8_t pin[16]);
 } floss_gap_security_t;
 
 /** Fill with defaults described above. */
 void floss_gap_security_defaults(floss_gap_security_t *sec);
 floss_err_t floss_gap_set_security(const floss_gap_security_t *sec);
+/** The current settings (to change one field: get, modify, set). */
+void floss_gap_get_security(floss_gap_security_t *sec);
 
 /** Answer a FLOSS_GAP_EVT_USER_CONFIRM. */
 floss_err_t floss_gap_user_confirm(uint16_t handle, bool accept);
@@ -230,6 +245,11 @@ const floss_bond_t *floss_gap_bond_at(uint8_t idx);
 const floss_bond_t *floss_gap_bond_last(void);
 /** Find bond by address. */
 const floss_bond_t *floss_gap_bond_find(const floss_addr_t *addr);
+/**
+ * Store a link key obtained out of band (e.g. paired over another transport)
+ * as a bond, marked most recently used and persisted like any other.
+ */
+floss_err_t floss_gap_bond_add(const floss_addr_t *addr, const floss_link_key_t *key);
 floss_err_t floss_gap_bond_delete(const floss_addr_t *addr);
 floss_err_t floss_gap_bond_delete_all(void);
 

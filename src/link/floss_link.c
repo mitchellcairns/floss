@@ -627,6 +627,25 @@ static void tick_fired(floss_timer_t *t, void *arg) {
     link_input_service();
 }
 
+floss_err_t floss_link_shift_phase(int32_t delta_us) {
+    if (!L.cfg || !L.pad || !L.session || L.cfg->report_interval_us == 0 ||
+        L.cfg->report_interval_us == FLOSS_LINK_INTERVAL_CONN) {
+        return FLOSS_ERR_STATE;
+    }
+    L.tick_deadline += (uint32_t)delta_us;
+    floss_timer_start_at(&L.tick_timer, L.tick_deadline);
+    return FLOSS_OK;
+}
+
+bool floss_link_next_report_at(uint32_t *t_us) {
+    if (!t_us || !L.cfg || !L.pad || !L.session || L.cfg->report_interval_us == 0 ||
+        L.cfg->report_interval_us == FLOSS_LINK_INTERVAL_CONN) {
+        return false;
+    }
+    *t_us = L.tick_deadline;
+    return true;
+}
+
 static void start_pacing(void) {
     floss_timer_stop(&L.tick_timer);
     L.due_mask = 0;
@@ -1006,6 +1025,7 @@ void floss_link_config_defaults(floss_link_config_t *cfg, floss_link_role_t role
     cfg->le_2m_phy = true;
     cfg->ping_period_ms = 0;
     cfg->auto_reconnect = true;
+    cfg->classic_store_keys = true;
 }
 
 static floss_err_t validate(const floss_link_config_t *cfg) {

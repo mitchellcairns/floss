@@ -293,12 +293,45 @@ TEST(reconnect_host_absent_page_timeout) {
     floss_tc_assert_sim_clean();
 }
 
+TEST(app_link_to_host_kept) {
+    floss_transport_t *t = floss_tc_sim_init(NULL);
+    floss_tc_hid_config(&g_cfg, 1000);
+    floss_tc_stack_start(t, &g_cfg);
+    floss_sim_chan_t *ctrl, *intr;
+    (void)floss_tc_hid_session(&ctrl, &intr);
+
+    /* HID closes its session and goes idle; the PC stays its host. */
+    ASSERT_EQ(floss_hid_disconnect(), FLOSS_OK);
+    floss_sim_pump_us(2000000);
+    ASSERT_EQ(floss_hid_state(), FLOSS_HID_STATE_IDLE);
+    ASSERT_NULL(floss_hci_conn_by_addr(&floss_tc_host));
+
+    /* The application calls the same PC for something else (RFCOMM, say): HID did not
+     * page it, so the link stays up and can be secured with the bond. */
+    floss_sim_log_clear();
+    ASSERT_EQ(floss_gap_connect(&floss_tc_host), FLOSS_OK);
+    floss_sim_pump_us(500000);
+    const floss_conn_t *c = floss_hci_conn_by_addr(&floss_tc_host);
+    ASSERT_NOT_NULL(c);
+    ASSERT_EQ(floss_gap_authenticate(c->handle), FLOSS_OK);
+    floss_sim_pump_us(2000000);
+    ASSERT_NULL(floss_sim_cmd_last(FLOSS_HCI_DISCONNECT));
+    c = floss_hci_conn_by_addr(&floss_tc_host);
+    ASSERT_NOT_NULL(c);
+    ASSERT_TRUE(c->encrypted);
+    const floss_gap_evt_t *auth = floss_tc_gap_last(FLOSS_GAP_EVT_AUTHENTICATED);
+    ASSERT_NOT_NULL(auth);
+    ASSERT_EQ(auth->status, FLOSS_HCI_SUCCESS);
+    ASSERT_EQ(floss_hid_state(), FLOSS_HID_STATE_IDLE);
+}
+
 static const floss_test_case_t tests[] = {
     TEST_CASE(bringup_reaches_ready),
     TEST_CASE(first_pairing_session),
     TEST_CASE(stack_initiated_pairing),
     TEST_CASE(reconnect_after_reboot),
     TEST_CASE(reconnect_host_absent_page_timeout),
+    TEST_CASE(app_link_to_host_kept),
 };
 
 FLOSS_TEST_MAIN("hid_flow", tests)

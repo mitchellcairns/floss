@@ -79,6 +79,13 @@ bool floss_gap_sec_want_sc(void)
     return s_sec.cfg.secure_connections;
 }
 
+void floss_gap_get_security(floss_gap_security_t *sec)
+{
+    if (sec) {
+        *sec = s_sec.cfg;
+    }
+}
+
 floss_err_t floss_gap_set_security(const floss_gap_security_t *sec)
 {
     if (!sec || sec->io_capability > FLOSS_IO_CAP_NO_INPUT_NO_OUTPUT) {
@@ -394,17 +401,23 @@ static void on_passkey_notification(const floss_addr_t *addr, const uint8_t *p, 
 /** PIN Code Request: addr(6). Legacy (pre Simple Pairing) hosts only. */
 static void on_pin_code_request(const floss_addr_t *addr)
 {
-    const char *pin = s_sec.cfg.legacy_pin;
-    if (!pin || !pairing_allowed(addr)) {
+    uint8_t p[23];
+    memset(p, 0, sizeof(p));
+    memcpy(&p[0], addr->b, 6);
+    if (pairing_allowed(addr)) {
+        if (s_sec.cfg.pin_handler) {
+            uint8_t n = s_sec.cfg.pin_handler(addr, &p[7]);
+            p[6] = n > LEGACY_PIN_MAX ? (uint8_t)LEGACY_PIN_MAX : n;
+        } else if (s_sec.cfg.legacy_pin) {
+            p[6] = (uint8_t)strlen(s_sec.cfg.legacy_pin);
+            memcpy(&p[7], s_sec.cfg.legacy_pin, p[6]);
+        }
+    }
+    if (p[6] == 0) {
         FLOSS_LOGI(GAP, "legacy PIN pairing refused");
         cmd_addr(FLOSS_HCI_PIN_CODE_REQUEST_NEG_REPLY, addr);
         return;
     }
-    uint8_t p[23];
-    memset(p, 0, sizeof(p));
-    memcpy(&p[0], addr->b, 6);
-    p[6] = (uint8_t)strlen(pin);
-    memcpy(&p[7], pin, p[6]);
     floss_hci_cmd(FLOSS_HCI_PIN_CODE_REQUEST_REPLY, p, sizeof(p), NULL, NULL);
 
     floss_gap_link_t *l = floss_gap_link_for_event(addr);
