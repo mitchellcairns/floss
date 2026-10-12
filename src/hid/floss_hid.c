@@ -1674,7 +1674,8 @@ static const floss_l2cap_ops_t hid_intr_ops = {
 
 /* ---- GAP events ----------------------------------------------------------- */
 
-void floss_hid_on_controller_ready(void) {
+/* GAP's pre-READY hook (floss_gap_pre_ready_hook): runs before any READY listener. */
+static void hid_on_controller_ready(void) {
     /* Controller (re)started: any previous link is gone. */
     if (hid.cfg) {
         hid_end_session();
@@ -1821,6 +1822,7 @@ floss_err_t floss_hid_init(const floss_hid_config_t *cfg, const floss_hid_callba
     if (!cfg || !cfg->report_descriptor || cfg->report_descriptor_len == 0) {
         return FLOSS_ERR_INVALID;
     }
+    floss_gap_pre_ready_hook = hid_on_controller_ready;
     if (cfg->report_descriptor_len > FLOSS_HID_MAX_DESCRIPTOR) {
         FLOSS_LOGE(HID, "report descriptor too large (%u > FLOSS_HID_MAX_DESCRIPTOR %u)", cfg->report_descriptor_len,
                    (unsigned)FLOSS_HID_MAX_DESCRIPTOR);

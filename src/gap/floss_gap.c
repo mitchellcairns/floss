@@ -368,7 +368,9 @@ static void ready_next(void)
             s_gap.ready = true;
             FLOSS_LOGI(GAP, "ready (scan: %s%s)", s_gap.discoverable ? "discoverable " : "",
                        s_gap.connectable ? "connectable" : "");
-            floss_hid_on_controller_ready();
+            if (floss_gap_pre_ready_hook) {
+                floss_gap_pre_ready_hook();
+            }
             floss_gap_emit_simple(FLOSS_GAP_EVT_READY, FLOSS_GAP_NO_HANDLE, NULL, 0);
 #if FLOSS_ENABLE_LE
             floss_le_on_hci_ready();
@@ -410,8 +412,11 @@ void floss_gap_on_hci_ready(void)
 /* Lifecycle                                                                */
 /* ======================================================================== */
 
+void (*floss_gap_pre_ready_hook)(void);
+
 void floss_gap_init(void)
 {
+    floss_gap_pre_ready_hook = NULL;
     memset(&s_gap, 0, sizeof(s_gap));
     s_gap.name_len = (uint8_t)strlen(GAP_DEFAULT_NAME);
     memcpy(s_gap.name, GAP_DEFAULT_NAME, s_gap.name_len);

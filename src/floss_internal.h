@@ -137,12 +137,14 @@ void floss_link_reset(void);
 #endif
 
 /**
- * The controller (re)started: every link is gone. Called by GAP just before
- * FLOSS_GAP_EVT_READY reaches the listeners, so a connect an application
- * starts from its own READY handler is never cleared afterwards, whatever
- * the listener order.
+ * The controller (re)started: every link is gone. GAP calls this hook just
+ * before FLOSS_GAP_EVT_READY reaches the listeners, so a profile can drop
+ * its old session first and a connect an application starts from its own
+ * READY handler is never cleared afterwards, whatever the listener order.
+ * A pointer, not a direct call, so GAP does not depend on any profile: HID
+ * sets it in floss_hid_init(); floss_init() (via floss_gap_init) clears it.
  */
-void floss_hid_on_controller_ready(void);
+extern void (*floss_gap_pre_ready_hook)(void);
 
 /* ===================== core ============================================== */
 
