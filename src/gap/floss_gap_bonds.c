@@ -24,6 +24,12 @@
  *     [23]     link key type (as reported in Link Key Notification)
  *     [24..26] peer Class of Device
  *     [27..30] seq
+ *     [31..36] our own address when the bond was made (version 2; version 1
+ *              records are 31 bytes and load with an all-zero local address,
+ *              which matches any local address)
+ *
+ * A bond belongs to the address PAIR: the same host bonded under two of our
+ * addresses has two records, as it does on the host side.
  *
  * LE bonds (LTK/IRK) are not stored here; SMP keeps its own records.
  */
@@ -47,12 +53,15 @@ uint16_t floss_gap_bond_encode(const floss_bond_t *bond, uint8_t out[FLOSS_GAP_B
     out[23] = bond->key.type;
     floss_put_le24(&out[24], bond->cod);
     floss_put_le32(&out[27], bond->seq);
+    memcpy(&out[31], bond->local.b, 6);
     return FLOSS_GAP_BOND_REC_LEN;
 }
 
 bool floss_gap_bond_decode(const uint8_t *in, int len, floss_bond_t *bond)
 {
-    if (len != (int)FLOSS_GAP_BOND_REC_LEN || in[0] != FLOSS_GAP_BOND_REC_VERSION) {
+    bool v2 = len == (int)FLOSS_GAP_BOND_REC_LEN && in[0] == FLOSS_GAP_BOND_REC_VERSION;
+    bool v1 = len == (int)FLOSS_GAP_BOND_REC_V1_LEN && in[0] == 1u;
+    if (!v1 && !v2) {
         return false;
     }
     memcpy(bond->addr.b, &in[1], 6);
@@ -63,6 +72,10 @@ bool floss_gap_bond_decode(const uint8_t *in, int len, floss_bond_t *bond)
     bond->key.type = in[23];
     bond->cod = floss_get_le24(&in[24]);
     bond->seq = floss_get_le32(&in[27]);
+    memset(bond->local.b, 0, 6);
+    if (v2) {
+        memcpy(bond->local.b, &in[31], 6);
+    }
     return true;
 }
 
@@ -70,10 +83,37 @@ bool floss_gap_bond_decode(const uint8_t *in, int len, floss_bond_t *bond)
 /* Internals                                                                */
 /* ------------------------------------------------------------------------ */
 
+/** Our address right now (all-zero before the controller reported it). */
+static const floss_addr_t *local_addr(void)
+{
+    return &floss_hci_controller()->addr;
+}
+
+/** Does bond i belong to our current address? Unknown on either side matches. */
+static bool bond_local_matches(int i)
+{
+    const floss_addr_t *now = local_addr();
+    return floss_addr_is_zero(&s_bonds.bond[i].local) || floss_addr_is_zero(now) ||
+           floss_addr_eq(&s_bonds.bond[i].local, now);
+}
+
+/** Bond for this peer under our current address. */
 static int bond_slot(const floss_addr_t *addr)
 {
     for (int i = 0; i < FLOSS_MAX_BONDS; i++) {
-        if (s_bonds.used[i] && floss_addr_eq(&s_bonds.bond[i].addr, addr)) {
+        if (s_bonds.used[i] && floss_addr_eq(&s_bonds.bond[i].addr, addr) && bond_local_matches(i)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/** Exact pair match (loading: duplicates are the same peer AND the same local address). */
+static int bond_slot_exact(const floss_addr_t *addr, const floss_addr_t *local)
+{
+    for (int i = 0; i < FLOSS_MAX_BONDS; i++) {
+        if (s_bonds.used[i] && floss_addr_eq(&s_bonds.bond[i].addr, addr) &&
+            floss_addr_eq(&s_bonds.bond[i].local, local)) {
             return i;
         }
     }
@@ -84,7 +124,7 @@ static int bond_slot_last(void)
 {
     int best = -1;
     for (int i = 0; i < FLOSS_MAX_BONDS; i++) {
-        if (s_bonds.used[i] && (best < 0 || s_bonds.bond[i].seq > s_bonds.bond[best].seq)) {
+        if (s_bonds.used[i] && bond_local_matches(i) && (best < 0 || s_bonds.bond[i].seq > s_bonds.bond[best].seq)) {
             best = i;
         }
     }
@@ -132,7 +172,7 @@ void floss_gap_bonds_load(void)
             FLOSS_LOGW(GAP, "bond slot %d: unreadable record (len %d) ignored", i, n);
             continue;
         }
-        if (bond_slot(&b.addr) >= 0) {
+        if (bond_slot_exact(&b.addr, &b.local) >= 0) {
             FLOSS_LOGW(GAP, "bond slot %d: duplicate address ignored", i);
             continue;
         }
@@ -172,6 +212,7 @@ const floss_bond_t *floss_gap_bond_save(const floss_addr_t *addr, const floss_li
 
     floss_bond_t *b = &s_bonds.bond[slot];
     b->addr = *addr;
+    b->local = *local_addr(); /* the pair this key belongs to (upgrades an old any-address record) */
     b->key = *key;
     b->cod = cod & 0xFFFFFFu;
     b->seq = ++s_bonds.seq;

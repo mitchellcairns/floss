@@ -64,6 +64,7 @@ void floss_gap_security_defaults(floss_gap_security_t *sec)
     sec->secure_connections = true;
     sec->legacy_pin = "0000";
     sec->pairable = true;
+    sec->forget_bond_on_key_missing = true;
 }
 
 void floss_gap_sec_init(void)
@@ -499,8 +500,10 @@ static void on_auth_complete(const uint8_t *p, uint8_t len)
 
     FLOSS_LOGW(GAP, "handle 0x%03X authentication failed: %s", handle, floss_hci_status_str(status));
     if ((status == FLOSS_HCI_ERR_PIN_OR_KEY_MISSING || status == FLOSS_HCI_ERR_AUTH_FAILURE) &&
-        floss_gap_bond_find(&addr)) {
-        /* The host no longer has our key: forget ours so the next attempt pairs afresh. */
+        s_sec.cfg.forget_bond_on_key_missing && floss_gap_bond_find(&addr)) {
+        /* The host no longer has our key: forget ours so the next attempt
+         * pairs afresh. Only the bond for this address pair (our current
+         * address): a bond made under another local address stays. */
         floss_gap_bond_delete(&addr);
     }
     if (l) {

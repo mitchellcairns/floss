@@ -206,6 +206,13 @@ typedef struct {
     const char *legacy_pin;   /**< for pre-2.1 hosts, default "0000" */
     bool pairable;            /**< accept NEW pairings (default true). Bonded peers always allowed. */
     /**
+     * When a bonded host rejects our key (PIN/key missing, authentication
+     * failure), forget the bond for this address pair so the next attempt
+     * pairs afresh (default true). Bonds made under another local address
+     * are never touched. Set false to keep keys until the app deletes them.
+     */
+    bool forget_bond_on_key_missing;
+    /**
      * Optional legacy PIN provider, for PINs that are binary (may contain zero
      * bytes) or differ per peer. Write up to 16 bytes into pin and return the
      * length; 0 refuses the pairing. When NULL, legacy_pin is used. Called
@@ -235,19 +242,34 @@ typedef struct {
     floss_link_key_t key;
     uint32_t cod;      /**< peer class of device (if known) */
     uint32_t seq;      /**< recency: higher = more recently used */
+    /**
+     * Our own address when the bond was made. A host keys its bond by the
+     * address pair, so a device that changes its address (one per mode, say)
+     * has one bond per local address. All-zero = unknown (a record from an
+     * older firmware): it matches any local address.
+     */
+    floss_addr_t local;
 } floss_bond_t;
+
+/*
+ * Bonds are keyed by the pair (peer address, our address). Lookups, saves
+ * and deletes by peer address use our CURRENT address (floss_hci_controller()
+ * ->addr); floss_gap_bond_count()/floss_gap_bond_at() list every bond.
+ */
 
 /** Number of stored bonds. */
 uint8_t floss_gap_bond_count(void);
 /** Get bond by index (0..count-1). */
 const floss_bond_t *floss_gap_bond_at(uint8_t idx);
-/** Most recently used bond (the host to reconnect to), or NULL. */
+/** Most recently used bond under our current address (the host to reconnect to), or NULL. */
 const floss_bond_t *floss_gap_bond_last(void);
 /** Find bond by address. */
 const floss_bond_t *floss_gap_bond_find(const floss_addr_t *addr);
 /**
  * Store a link key obtained out of band (e.g. paired over another transport)
- * as a bond, marked most recently used and persisted like any other.
+ * as a bond, marked most recently used and persisted like any other. It is
+ * tied to our current address; called before READY (address not known yet)
+ * the bond matches any local address.
  */
 floss_err_t floss_gap_bond_add(const floss_addr_t *addr, const floss_link_key_t *key);
 floss_err_t floss_gap_bond_delete(const floss_addr_t *addr);

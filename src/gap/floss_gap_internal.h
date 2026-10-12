@@ -105,8 +105,9 @@ void floss_gap_sec_timer_fn(floss_timer_t *t, void *arg);
 /* ------------------------------------------------------------------------ */
 
 /** Serialised bond record: version + addr6 + key16 + type1 + cod3 + seq4. */
-#define FLOSS_GAP_BOND_REC_VERSION 1u
-#define FLOSS_GAP_BOND_REC_LEN     31u
+#define FLOSS_GAP_BOND_REC_VERSION 2u
+#define FLOSS_GAP_BOND_REC_LEN     37u
+#define FLOSS_GAP_BOND_REC_V1_LEN  31u /* still read: no local address (matches any) */
 
 /** Encode one bond (explicit byte layout, no struct casts). Returns FLOSS_GAP_BOND_REC_LEN. */
 uint16_t floss_gap_bond_encode(const floss_bond_t *bond, uint8_t out[FLOSS_GAP_BOND_REC_LEN]);

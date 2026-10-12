@@ -325,7 +325,72 @@ TEST(app_link_to_host_kept) {
     ASSERT_EQ(floss_hid_state(), FLOSS_HID_STATE_IDLE);
 }
 
+/* Restart the stack with the controller reporting `local` as our address. */
+static void start_as(const floss_addr_t *local) {
+    floss_sim_config_t cfg;
+    floss_tc_sim_config(&cfg);
+    cfg.addr = *local;
+    floss_tc_stack_start(floss_tc_sim_init(&cfg), NULL);
+}
+
+/*
+ * A device that changes its own address keeps one bond per address pair:
+ * a host rejecting the key under one local address (here: deleting the
+ * bond for the current pair) must not cost the bond made under another.
+ */
+TEST(bonds_keyed_by_address_pair) {
+    const floss_addr_t local_a = {{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x02}};
+    const floss_addr_t local_b = {{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0x02}};
+    const floss_addr_t peer = {{0x01, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}};
+    floss_link_key_t key_a = {{0xAA}, 0x07};
+    floss_link_key_t key_b = {{0xBB}, 0x07};
+
+    floss_test_store_reset();
+    start_as(&local_a);
+    ASSERT_EQ(floss_gap_bond_add(&peer, &key_a), FLOSS_OK);
+    ASSERT_MEM_EQ(floss_gap_bond_find(&peer)->local.b, local_a.b, 6);
+
+    /* Same host, other local address: the A bond is not ours to use... */
+    start_as(&local_b);
+    ASSERT_EQ(floss_gap_bond_count(), 1);
+    ASSERT_NULL(floss_gap_bond_find(&peer));
+    ASSERT_NULL(floss_gap_bond_last());
+    /* ...a B bond is separate, and forgetting it leaves A's alone. */
+    ASSERT_EQ(floss_gap_bond_add(&peer, &key_b), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_count(), 2);
+    ASSERT_EQ(floss_gap_bond_find(&peer)->key.key[0], 0xBB);
+    ASSERT_EQ(floss_gap_bond_delete(&peer), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_count(), 1);
+
+    /* Back under A: the original key is still there. */
+    start_as(&local_a);
+    ASSERT_NOT_NULL(floss_gap_bond_find(&peer));
+    ASSERT_EQ(floss_gap_bond_find(&peer)->key.key[0], 0xAA);
+    ASSERT_NOT_NULL(floss_gap_bond_last());
+}
+
+/* Records written before bonds carried the local address match any address. */
+TEST(bond_record_v1_matches_any_local_address) {
+    const floss_addr_t peer = {{0x02, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}};
+    const floss_addr_t local_b = {{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0x02}};
+    uint8_t v1[31] = {1};
+    memcpy(&v1[1], peer.b, 6);
+    v1[7] = 0x5A;              /* key[0] */
+    v1[23] = 0x07;             /* key type */
+    floss_put_le32(&v1[27], 9); /* seq */
+
+    floss_test_store_reset();
+    ASSERT_EQ(floss_hal_store_write(FLOSS_STORE_KEY_BOND_BASE, v1, sizeof v1), FLOSS_OK);
+    start_as(&local_b);
+    const floss_bond_t *b = floss_gap_bond_find(&peer);
+    ASSERT_NOT_NULL(b);
+    ASSERT_EQ(b->key.key[0], 0x5A);
+    ASSERT_TRUE(floss_addr_is_zero(&b->local));
+}
+
 static const floss_test_case_t tests[] = {
+    TEST_CASE(bonds_keyed_by_address_pair),
+    TEST_CASE(bond_record_v1_matches_any_local_address),
     TEST_CASE(bringup_reaches_ready),
     TEST_CASE(first_pairing_session),
     TEST_CASE(stack_initiated_pairing),
