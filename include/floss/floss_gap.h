@@ -211,6 +211,8 @@ typedef struct {
 /** Fill with defaults described above. */
 void floss_gap_security_defaults(floss_gap_security_t *sec);
 floss_err_t floss_gap_set_security(const floss_gap_security_t *sec);
+/** The current settings (to change one field: get, modify, set). */
+void floss_gap_get_security(floss_gap_security_t *sec);
 
 /** Answer a FLOSS_GAP_EVT_USER_CONFIRM. */
 floss_err_t floss_gap_user_confirm(uint16_t handle, bool accept);

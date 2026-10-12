@@ -12,9 +12,12 @@
  *
  * Two transports, chosen at init:
  *
- *   FLOSS_LINK_CLASSIC  dongle = central (it pages the pad), custom L2CAP
- *                       PSM, active mode. The central polls the peripheral
- *                       every 2 slots: one report per 1.25 ms, 800 Hz max.
+ *   FLOSS_LINK_CLASSIC  dongle = central (it pages the pad; with
+ *                       classic_pad_connects the pad pages the dongle and is
+ *                       central), custom L2CAP PSM, active mode. The central
+ *                       polls the peripheral every 2 slots: one report per
+ *                       1.25 ms, 800 Hz max. classic_store_keys = false pairs
+ *                       on every connection and stores nothing.
  *                       Idle power: optional sniff after inactivity (the
  *                       first input after idle waits for the next sniff
  *                       anchor plus sniff exit).
@@ -96,8 +99,18 @@ typedef enum {
 typedef struct {
     floss_link_role_t role;
     floss_link_transport_t transport;
-    /** Pad: name (Classic local name / LE advertised name). Dongle: name to look for (prefix match; NULL = any FLOSS link pad). */
+    /**
+     * Pad: name (Classic local name / LE advertised name). Dongle: name to
+     * look for (prefix match; NULL = any FLOSS link pad); with
+     * classic_pad_connects, the dongle's own local name instead.
+     */
     const char *name;
+    /**
+     * Classic, the side that connects: name prefix the peer must have (NULL
+     * = any FLOSS link device of the other role). Default NULL; a dongle
+     * that connects falls back to `name`.
+     */
+    const char *peer_name;
 
     /* --- pad sending --------------------------------------------------- */
     /** 0 = send on change as fast as the link allows; >0 = paced period (us). LE: FLOSS_LINK_INTERVAL_CONN = one per connection event. */
@@ -106,7 +119,27 @@ typedef struct {
     uint8_t max_inflight;
 
     /* --- Classic -------------------------------------------------------- */
-    /** Dongle: poll latency requested with QoS setup after connecting (us). Default 1250. */
+    /**
+     * Who connects. false (default): the dongle searches for and pages the
+     * pad, which waits connectable. true: the pad searches for and pages the
+     * dongle, which waits; the pad is then central. Whichever side connects
+     * searches while pairing, pages its remembered peer, requests the poll
+     * latency and runs the AFH policy; the waiting side is discoverable while
+     * pairing, connectable otherwise, and answers neither while connected.
+     * Both sides must agree. Sniff for idle power stays a pad decision.
+     */
+    bool classic_pad_connects;
+    /**
+     * Keep the peer's link key (bond). Default true. false: this side stores
+     * no keys: every connection pairs again (just works), the key lives for
+     * that connection only. The waiting side then accepts any link device of
+     * the other role while it has no connection (no pairing window needed)
+     * and remembers nobody; the connecting side remembers its last peer's
+     * address only, pages it first and searches for any other one when it
+     * does not answer. Turns off bonding in GAP's security settings.
+     */
+    bool classic_store_keys;
+    /** Connecting side: poll latency requested with QoS setup after connecting (us). Default 1250. */
     uint32_t classic_poll_us;
     /** Power: enter sniff after this many ms without input changes (0 = never). Default 0. */
     uint32_t classic_idle_ms;
@@ -114,10 +147,11 @@ typedef struct {
     uint16_t classic_idle_sniff_slots;
     /**
      * Adaptive hopping policy (see docs/PERFORMANCE.md, "periodic gaps"):
-     *  FLOSS_LINK_AFH_FREEZE (default): the dongle lets its controller assess
+     *  FLOSS_LINK_AFH_FREEZE (default): the connecting side (central; the
+     *    dongle by default) lets its controller assess
      *    channels for classic_afh_learn_ms after connecting, then hands the
      *    learned map back as the host classification and turns assessment off;
-     *    the pad never assesses. Bad channels stay avoided, no periodic scans.
+     *    the waiting side never assesses. Bad channels stay avoided, no periodic scans.
      *  FLOSS_LINK_AFH_CONTROLLER: controller default (continuous assessment:
      *    ~25 ms report gaps every few seconds on the CYW43439).
      *  FLOSS_LINK_AFH_ALL_CHANNELS: no assessment at all, hop on all 79.

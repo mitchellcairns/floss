@@ -1006,6 +1006,7 @@ void floss_link_config_defaults(floss_link_config_t *cfg, floss_link_role_t role
     cfg->le_2m_phy = true;
     cfg->ping_period_ms = 0;
     cfg->auto_reconnect = true;
+    cfg->classic_store_keys = true;
 }
 
 static floss_err_t validate(const floss_link_config_t *cfg) {

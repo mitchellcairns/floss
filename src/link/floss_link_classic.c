@@ -9,13 +9,19 @@
  *  ROLES
  * ===========================================================================
  *
- *   pad (peripheral)                       dongle (central)
- *   ----------------                       ----------------
+ * One side waits to be connected, the other connects. By default the pad
+ * waits and the dongle connects; with classic_pad_connects it is the other
+ * way round. Connecting is independent of the data roles (the pad sends
+ * INPUT, the dongle OUTPUT/PING), so the code below talks about the
+ * WAITING and the CONNECTING side:
+ *
+ *   waiting (peripheral)                   connecting (central)
+ *   --------------------                   --------------------
  *   serves FLOSS_LINK_PSM (encrypted)      PAIRING: inquiry; the first answer
  *   EIR: name + link service UUID            whose EIR lists the link service
- *   CoD: peripheral / gamepad                (and starts with cfg->name, if
- *   PAIRING: discoverable + connectable      set) -> cancel inquiry -> page it
- *   CONNECTING: connectable, fast page     CONNECTING: page the stored pad,
+ *   CoD: gamepad (pad)                       (and starts with the peer name,
+ *   PAIRING: discoverable + connectable      if set) -> cancel inquiry -> page
+ *   CONNECTING: connectable, fast page     CONNECTING: page the stored peer,
  *     scan (FLOSS_LINK_PAD_PSCAN_*)          backoff 0.2 s doubling to 5 s
  *   CONNECTED: page scan OFF               link up: link policy without role
  *     (docs/PERFORMANCE.md finding 3)        switch (we stay central), sniff
@@ -33,6 +39,14 @@
  * PAIRING, and then becomes the peer (its link key is in GAP's bond
  * database, the record of who it is under FLOSS_LINK_STORE_KEY_PEER; the
  * previous peer's link key is deleted). Others are refused at channel open.
+ *
+ * Without stored keys (classic_store_keys false) nothing is kept: every
+ * connection pairs again and the key lives with the link. The waiting side
+ * remembers nobody, so it rests in PAIRING (discoverable + connectable) and
+ * accepts any link device of the other role. The connecting side remembers
+ * its last peer's address only: it pages that peer first and, when it does
+ * not answer, searches. A search round then prefers the remembered peer and
+ * otherwise takes the strongest answer of the round.
  *
  * ===========================================================================
  *  IDLE POWER (pad, classic_idle_ms > 0)
@@ -62,11 +76,12 @@ static struct {
     floss_l2cap_chan_t *chan; /**< the channel (pending or open) */
     bool open;
 
-    /* dongle */
+    /* connecting side */
     floss_addr_t target;      /**< address being paged */
     bool paging;
-    bool have_candidate;      /**< PAIRING: a pad answered the inquiry */
+    bool have_candidate;      /**< PAIRING: a peer answered the inquiry */
     floss_addr_t candidate;
+    int8_t candidate_rssi;    /**< without stored keys: the strongest answer of the round */
     uint8_t attempts;         /**< consecutive failures (backoff) */
     bool peer_idle_sniff;     /**< the pad announced idle sniff in HELLO */
     floss_timer_t retry_timer;
@@ -95,6 +110,20 @@ static bool is_pad(void) {
     return floss_link_is_pad(cfg());
 }
 
+/** The side that waits to be connected: the pad, or the dongle with classic_pad_connects. */
+static bool is_waiting(void) {
+    return is_pad() != cfg()->classic_pad_connects;
+}
+
+static bool store_keys(void) {
+    return cfg()->classic_store_keys;
+}
+
+/** What the peer is called in logs. */
+static const char *peer_word(void) {
+    return is_pad() ? "dongle" : "pad";
+}
+
 static void log_addr(const char *what, const floss_addr_t *addr) {
     char s[18];
     floss_addr_to_str(addr, s);
@@ -113,6 +142,12 @@ static void drop_link(void) {
  * becomes the peer (and the previous one's link key goes).
  */
 static bool accept_peer(const floss_addr_t *addr) {
+    if (!store_keys()) {
+        if (!is_waiting()) {
+            floss_link_peer_set(0, addr); /* whom to try first next time */
+        }
+        return true;
+    }
     floss_link_peer_t p;
     bool have = floss_link_peer_get(&p);
     if (have && floss_addr_eq(&p.addr, addr)) {
@@ -130,19 +165,23 @@ static bool accept_peer(const floss_addr_t *addr) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Pad                                                                      */
+/* Waiting side                                                             */
 /* ------------------------------------------------------------------------ */
 
-static void pad_apply_scan(floss_link_state_t st) {
+static void wait_apply_scan(floss_link_state_t st) {
     bool pairing = st == FLOSS_LINK_STATE_PAIRING;
     floss_gap_set_scan(pairing, pairing || st == FLOSS_LINK_STATE_CONNECTING);
 }
 
-static void pad_rest(void) {
+static void wait_rest(void) {
     floss_link_state_t st = floss_link_rest_state();
     floss_link_set_state(st);
-    pad_apply_scan(st);
+    wait_apply_scan(st);
 }
+
+/* ------------------------------------------------------------------------ */
+/* Pad idle power                                                           */
+/* ------------------------------------------------------------------------ */
 
 /** Back to active mode (fast polling) if we are in, or asked for, sniff. */
 static void pad_wake(void) {
@@ -213,17 +252,18 @@ static void pad_on_mode_change(const floss_gap_evt_t *evt) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Dongle                                                                   */
+/* Connecting side                                                          */
 /* ------------------------------------------------------------------------ */
 
-static void dongle_search(void);
+static void conn_search(void);
 
-/** Does this inquiry answer come from a FLOSS link pad we want? */
-static bool dongle_match(const floss_gap_evt_t *evt) {
+/** Does this inquiry answer come from a FLOSS link device we want? */
+static bool conn_match(const floss_gap_evt_t *evt) {
     if (!floss_gap_eir_has_uuid128(evt->eir, evt->eir_len, floss_link_uuid_service)) {
         return false;
     }
-    const char *want = cfg()->name;
+    /* A dongle's `name` is the pad name it looks for (unless peer_name says otherwise). */
+    const char *want = cfg()->peer_name ? cfg()->peer_name : (is_pad() ? NULL : cfg()->name);
     if (!want) {
         return true;
     }
@@ -236,14 +276,14 @@ static bool dongle_match(const floss_gap_evt_t *evt) {
     return name && nlen >= wlen && memcmp(name, want, wlen) == 0;
 }
 
-static void dongle_retry_later(void) {
+static void conn_retry_later(void) {
     floss_timer_start(&C.retry_timer, floss_link_backoff_us(C.attempts));
     if (C.attempts < 16) {
         C.attempts++;
     }
 }
 
-static void dongle_page(const floss_addr_t *addr) {
+static void conn_page(const floss_addr_t *addr) {
     C.target = *addr;
     floss_err_t err = floss_gap_connect(addr);
     if (err == FLOSS_OK) {
@@ -254,11 +294,11 @@ static void dongle_page(const floss_addr_t *addr) {
     if (err == FLOSS_ERR_BUSY && floss_gap_inquiry_active()) {
         floss_gap_inquiry_cancel();
     }
-    dongle_retry_later();
+    conn_retry_later();
 }
 
-/** PAIRING: run inquiry rounds until a pad answers. */
-static void dongle_search(void) {
+/** PAIRING: run inquiry rounds until a peer answers. */
+static void conn_search(void) {
     floss_link_set_state(FLOSS_LINK_STATE_PAIRING);
     C.have_candidate = false;
     if (floss_gap_inquiry_active() || C.paging || C.handle != CL_NO_HANDLE) {
@@ -267,39 +307,43 @@ static void dongle_search(void) {
     floss_err_t err = floss_gap_inquiry_start(FLOSS_LINK_INQUIRY_LENGTH, 0);
     if (err != FLOSS_OK) {
         FLOSS_LOGD(LINK, "inquiry not started: %s", floss_err_str(err));
-        dongle_retry_later();
+        conn_retry_later();
     }
 }
 
-static void dongle_rest(void) {
+static void conn_rest(void) {
     floss_link_state_t st = floss_link_rest_state();
     if (st == FLOSS_LINK_STATE_PAIRING) {
-        dongle_search();
+        conn_search();
         return;
     }
     floss_link_set_state(st);
     floss_link_peer_t p;
     if (st == FLOSS_LINK_STATE_CONNECTING && floss_link_peer_get(&p) && !C.paging && C.handle == CL_NO_HANDLE) {
-        log_addr("reconnecting to pad", &p.addr);
-        dongle_page(&p.addr);
+        FLOSS_LOGI(LINK, "reconnecting to the %s", peer_word());
+        log_addr("  at", &p.addr);
+        conn_page(&p.addr);
     }
 }
 
-/** A page / link attempt failed or the link was lost. */
-static void dongle_after_failure(void) {
+/** A page failed (page_failed) or a link / its channel was lost. */
+static void conn_after_failure(bool page_failed) {
     if (floss_link_state() == FLOSS_LINK_STATE_PAIRING) {
         C.have_candidate = false;
-        dongle_search();
+        conn_search();
         return;
     }
     floss_link_state_t st = floss_link_rest_state();
-    if (st == FLOSS_LINK_STATE_PAIRING) {
-        dongle_search();
+    /* Without stored keys, once the remembered peer does not answer a page,
+     * any free peer will do: look for one (the pairing window brings us back
+     * to the remembered peer when nobody answers). */
+    if (st == FLOSS_LINK_STATE_PAIRING || (!store_keys() && page_failed && st == FLOSS_LINK_STATE_CONNECTING)) {
+        conn_search();
         return;
     }
     floss_link_set_state(st);
     if (st == FLOSS_LINK_STATE_CONNECTING) {
-        dongle_retry_later();
+        conn_retry_later();
     }
 }
 
@@ -313,12 +357,12 @@ static void retry_fired(floss_timer_t *t, void *arg) {
     floss_link_peer_t p;
     if (st == FLOSS_LINK_STATE_PAIRING) {
         if (C.have_candidate && !floss_gap_inquiry_active()) {
-            dongle_page(&C.candidate);
+            conn_page(&C.candidate);
         } else if (!C.have_candidate) {
-            dongle_search();
+            conn_search();
         }
     } else if (st == FLOSS_LINK_STATE_CONNECTING && floss_link_peer_get(&p)) {
-        dongle_page(&p.addr);
+        conn_page(&p.addr);
     }
 }
 
@@ -360,7 +404,7 @@ static void afh_apply_rest(void) {
 }
 
 static void afh_start_learning(void) {
-    if (is_pad() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE || C.handle == CL_NO_HANDLE) {
+    if (is_waiting() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE || C.handle == CL_NO_HANDLE) {
         return;
     }
     C.afh_learning = true;
@@ -402,7 +446,7 @@ static void afh_fired(floss_timer_t *t, void *arg) {
 }
 
 floss_err_t floss_link_afh_relearn(void) {
-    if (is_pad() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE) {
+    if (is_waiting() || cfg()->classic_afh != FLOSS_LINK_AFH_FREEZE) {
         return FLOSS_ERR_STATE;
     }
     if (C.handle == CL_NO_HANDLE) {
@@ -413,12 +457,13 @@ floss_err_t floss_link_afh_relearn(void) {
     return FLOSS_OK;
 }
 
-/** Fresh link to a pad: tune it, secure it, open the data channel. */
-static void dongle_link_up(uint16_t handle, const floss_addr_t *addr) {
+/** Fresh link to our peer: tune it, secure it, open the data channel. */
+static void conn_link_up(uint16_t handle, const floss_addr_t *addr) {
     C.handle = handle;
     C.paging = false;
     floss_timer_stop(&C.retry_timer);
-    log_addr("link up to pad", addr);
+    FLOSS_LOGI(LINK, "link up to the %s", peer_word());
+    log_addr("  at", addr);
 
     /* Stay central (no role switch); sniff only if somebody wants idle power. */
     uint16_t policy = (cfg()->classic_idle_ms > 0 || C.peer_idle_sniff) ? FLOSS_LINK_POLICY_SNIFF : 0;
@@ -452,16 +497,33 @@ static void cl_on_peer_hello(uint8_t flags) {
     }
 }
 
-static void dongle_on_inquiry(const floss_gap_evt_t *evt) {
+static void conn_on_inquiry(const floss_gap_evt_t *evt) {
     bool searching = floss_link_state() == FLOSS_LINK_STATE_PAIRING && C.handle == CL_NO_HANDLE && !C.paging;
     if (evt->type == FLOSS_GAP_EVT_INQUIRY_RESULT) {
-        if (searching && !C.have_candidate && dongle_match(evt)) {
-            C.have_candidate = true;
-            C.candidate = evt->addr;
-            log_addr("found pad", &evt->addr);
-            if (floss_gap_inquiry_cancel() != FLOSS_OK && !floss_gap_inquiry_active()) {
-                dongle_page(&C.candidate);
+        if (!searching || !conn_match(evt)) {
+            return;
+        }
+        bool take_now;
+        if (store_keys()) {
+            if (C.have_candidate) {
+                return;
             }
+            take_now = true; /* first answer wins */
+        } else {
+            /* Remembered peer: at once. Others: the strongest of the round. */
+            floss_link_peer_t p;
+            take_now = floss_link_peer_get(&p) && floss_addr_eq(&p.addr, &evt->addr);
+            if (!take_now && C.have_candidate && evt->rssi <= C.candidate_rssi) {
+                return;
+            }
+        }
+        C.have_candidate = true;
+        C.candidate = evt->addr;
+        C.candidate_rssi = evt->rssi;
+        FLOSS_LOGI(LINK, "found a %s (rssi %d)", peer_word(), evt->rssi);
+        log_addr("  at", &evt->addr);
+        if (take_now && floss_gap_inquiry_cancel() != FLOSS_OK && !floss_gap_inquiry_active()) {
+            conn_page(&C.candidate);
         }
         return;
     }
@@ -470,11 +532,11 @@ static void dongle_on_inquiry(const floss_gap_evt_t *evt) {
         return;
     }
     if (C.have_candidate) {
-        dongle_page(&C.candidate);
+        conn_page(&C.candidate);
     } else if (evt->status != FLOSS_HCI_SUCCESS) {
-        dongle_retry_later(); /* controller refused the inquiry: do not spin */
+        conn_retry_later(); /* controller refused the inquiry: do not spin */
     } else {
-        dongle_search(); /* nobody yet: next round */
+        conn_search(); /* nobody yet: next round */
     }
 }
 
@@ -512,8 +574,10 @@ static void chan_on_open(floss_l2cap_chan_t *ch, uint16_t status) {
     C.handle = ch->handle;
     C.attempts = 0;
     C.mode = c->mode;
-    if (is_pad()) {
+    if (is_waiting()) {
         floss_gap_set_scan(false, false); /* page scan steals radio time from the link */
+    }
+    if (is_pad()) {
         if (cfg()->classic_idle_ms) {
             floss_gap_set_link_policy(C.handle, FLOSS_LINK_POLICY_SNIFF);
             C.last_change_us = floss_hal_time_us();
@@ -575,26 +639,26 @@ static void link_down(uint8_t reason) {
     C.exit_req = false;
     C.peer_idle_sniff = false;
     floss_link_session_down(reason);
-    if (is_pad()) {
+    if (is_waiting()) {
         if (floss_link_state() == FLOSS_LINK_STATE_PAIRING) {
-            pad_apply_scan(FLOSS_LINK_STATE_PAIRING);
+            wait_apply_scan(FLOSS_LINK_STATE_PAIRING);
         } else {
-            pad_rest();
+            wait_rest();
         }
     } else {
-        dongle_after_failure();
+        conn_after_failure(false);
     }
 }
 
 static void cl_on_gap_event(const floss_gap_evt_t *evt) {
     switch (evt->type) {
     case FLOSS_GAP_EVT_CONNECTED: {
-        if (is_pad()) {
-            return; /* the pad learns its link at channel open */
+        if (is_waiting()) {
+            return; /* the waiting side learns its link at channel open */
         }
         floss_conn_t *c = floss_hci_conn_by_handle(evt->handle);
         if (C.paging && floss_addr_eq(&evt->addr, &C.target)) {
-            dongle_link_up(evt->handle, &evt->addr);
+            conn_link_up(evt->handle, &evt->addr);
         } else if (c && c->initiator && C.handle != evt->handle && floss_addr_eq(&evt->addr, &C.target)) {
             /* A page we gave up on (cancelled) completed anyway. */
             floss_gap_disconnect(evt->handle, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED);
@@ -602,10 +666,10 @@ static void cl_on_gap_event(const floss_gap_evt_t *evt) {
         return;
     }
     case FLOSS_GAP_EVT_CONNECT_FAILED:
-        if (!is_pad() && C.paging && floss_addr_eq(&evt->addr, &C.target)) {
+        if (!is_waiting() && C.paging && floss_addr_eq(&evt->addr, &C.target)) {
             C.paging = false;
             FLOSS_LOGI(LINK, "page failed: %s", floss_hci_status_str(evt->status));
-            dongle_after_failure();
+            conn_after_failure(true);
         }
         return;
     case FLOSS_GAP_EVT_DISCONNECTED:
@@ -615,8 +679,8 @@ static void cl_on_gap_event(const floss_gap_evt_t *evt) {
         return;
     case FLOSS_GAP_EVT_INQUIRY_RESULT:
     case FLOSS_GAP_EVT_INQUIRY_COMPLETE:
-        if (!is_pad()) {
-            dongle_on_inquiry(evt);
+        if (!is_waiting()) {
+            conn_on_inquiry(evt);
         }
         return;
     case FLOSS_GAP_EVT_MODE_CHANGE:
@@ -632,9 +696,10 @@ static void cl_on_gap_event(const floss_gap_evt_t *evt) {
 #ifndef FLOSS_LINK_DONGLE_KEEP_CENTRAL
 #define FLOSS_LINK_DONGLE_KEEP_CENTRAL 1
 #endif
-        if (FLOSS_LINK_DONGLE_KEEP_CENTRAL && !is_pad() && evt->handle == C.handle && C.handle != CL_NO_HANDLE &&
+        /* The connecting side (the dongle by default) stays central. */
+        if (FLOSS_LINK_DONGLE_KEEP_CENTRAL && !is_waiting() && evt->handle == C.handle && C.handle != CL_NO_HANDLE &&
             evt->status == 0 && evt->mode == 1) {
-            FLOSS_LOGW(LINK, "pad took the central role: switching back");
+            FLOSS_LOGW(LINK, "the %s took the central role: switching back", peer_word());
             floss_gap_switch_role(C.handle, 0);
         }
         return;
@@ -656,12 +721,22 @@ static floss_err_t cl_init(void) {
     floss_timer_init(&C.afh_timer, afh_fired, NULL);
 
     floss_err_t err = FLOSS_OK;
-    if (is_pad()) {
+    if (!store_keys()) {
+        /* Pair on every connection, keep the key with the link only. */
+        floss_gap_security_t sec;
+        floss_gap_get_security(&sec);
+        sec.bondable = false;
+        err = floss_gap_set_security(&sec);
+        if (is_waiting() && floss_link_peer_get(NULL)) {
+            floss_link_peer_clear(); /* the waiting side remembers nobody */
+        }
+    }
+    if (err == FLOSS_OK && is_waiting()) {
         err = floss_l2cap_register_psm(FLOSS_LINK_PSM, &s_chan_ops, NULL, FLOSS_SEC_ENCRYPTED);
         if (err == FLOSS_OK) {
-            err = floss_gap_set_name(cfg()->name ? cfg()->name : "FLOSS Pad");
+            err = floss_gap_set_name(cfg()->name ? cfg()->name : (is_pad() ? "FLOSS Pad" : "FLOSS Dongle"));
         }
-        if (err == FLOSS_OK) {
+        if (err == FLOSS_OK && is_pad()) {
             err = floss_gap_set_class(FLOSS_COD_GAMEPAD);
         }
         if (err == FLOSS_OK) {
@@ -690,18 +765,18 @@ static void cl_on_ready(void) {
     C.have_candidate = false;
     C.attempts = 0;
     C.mode = FLOSS_LINK_MODE_ACTIVE;
-    if (is_pad()) {
-        pad_rest();
+    if (is_waiting()) {
+        wait_rest();
     } else {
         floss_gap_set_scan(false, false);
-        dongle_rest();
+        conn_rest();
     }
 }
 
 static floss_err_t cl_pair(void) {
     floss_link_set_state(FLOSS_LINK_STATE_PAIRING);
-    if (is_pad()) {
-        pad_apply_scan(FLOSS_LINK_STATE_PAIRING);
+    if (is_waiting()) {
+        wait_apply_scan(FLOSS_LINK_STATE_PAIRING);
         drop_link(); /* link down keeps us PAIRING */
         return FLOSS_OK;
     }
@@ -716,13 +791,13 @@ static floss_err_t cl_pair(void) {
         floss_gap_connect_cancel(&C.target); /* CONNECT_FAILED is ignored once paging is false */
         C.paging = false;
     }
-    dongle_search();
+    conn_search();
     return FLOSS_OK;
 }
 
 static void cl_on_pair_timeout(void) {
-    if (is_pad()) {
-        pad_rest();
+    if (is_waiting()) {
+        wait_rest();
         return;
     }
     C.have_candidate = false;
@@ -733,7 +808,7 @@ static void cl_on_pair_timeout(void) {
         floss_gap_connect_cancel(&C.target);
         C.paging = false;
     }
-    dongle_rest(); /* paging waits (retry) until the inquiry has stopped */
+    conn_rest(); /* paging waits (retry) until the inquiry has stopped */
 }
 
 static void cl_forget(const floss_link_peer_t *old) {

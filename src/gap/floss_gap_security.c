@@ -79,6 +79,13 @@ bool floss_gap_sec_want_sc(void)
     return s_sec.cfg.secure_connections;
 }
 
+void floss_gap_get_security(floss_gap_security_t *sec)
+{
+    if (sec) {
+        *sec = s_sec.cfg;
+    }
+}
+
 floss_err_t floss_gap_set_security(const floss_gap_security_t *sec)
 {
     if (!sec || sec->io_capability > FLOSS_IO_CAP_NO_INPUT_NO_OUTPUT) {
