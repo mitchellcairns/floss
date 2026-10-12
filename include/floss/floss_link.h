@@ -141,6 +141,13 @@ typedef struct {
     bool classic_store_keys;
     /** Connecting side: poll latency requested with QoS setup after connecting (us). Default 1250. */
     uint32_t classic_poll_us;
+    /**
+     * Connecting side: how long a page to the remembered peer tries before the
+     * search for any other one starts (ms). A waiting peer that is on answers
+     * within its page scan interval (about 160 ms for a link device). 0 = GAP's
+     * default (5120). Default 0.
+     */
+    uint16_t classic_page_timeout_ms;
     /** Power: enter sniff after this many ms without input changes (0 = never). Default 0. */
     uint32_t classic_idle_ms;
     /** Power: sniff interval (slots) used while idle. Default 16 (10 ms). */

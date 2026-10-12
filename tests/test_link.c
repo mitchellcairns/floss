@@ -1272,6 +1272,34 @@ static unsigned next_tick(void) {
     return g_cb.ticks;
 }
 
+static void tweak_pad_connects_fast_page(floss_link_config_t *cfg) {
+    tweak_pad_connects_no_keys(cfg);
+    cfg->classic_page_timeout_ms = 1280;
+}
+
+/** Bring the stack up with the link and return the Write Page Timeout it sent, before the link's
+ * own search starts (it soon fills the simulator's command log). */
+static uint16_t page_timeout_at_bringup(void (*tweak)(floss_link_config_t *)) {
+    memset(&g_gap, 0, sizeof g_gap);
+    g_transport = floss_tc_sim_init(NULL);
+    ASSERT_EQ(floss_init(&(floss_init_t){.transport = g_transport}), FLOSS_OK);
+    ASSERT_EQ(floss_gap_add_listener(gap_rec, NULL), FLOSS_OK);
+    floss_link_config_defaults(&g_cfg, FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC);
+    tweak(&g_cfg);
+    ASSERT_EQ(floss_link_init(&g_cfg, &k_cb), FLOSS_OK);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    ASSERT_TRUE(floss_sim_pump_until(cond_ready, NULL, 5000));
+    const floss_sim_cmd_t *pt = floss_sim_cmd_last(FLOSS_HCI_WRITE_PAGE_TIMEOUT);
+    ASSERT_NOT_NULL(pt);
+    return floss_get_le16(&pt->params[0]);
+}
+
+TEST(classic_page_timeout) {
+    ASSERT_EQ(page_timeout_at_bringup(tweak_pad_connects_no_keys), 0x2000);   /* GAP's 5.12 s */
+    ASSERT_EQ(page_timeout_at_bringup(tweak_pad_connects_fast_page), 0x0800); /* 1.28 s */
+    ASSERT_EQ(floss_gap_set_page_timeout(0), FLOSS_ERR_INVALID);
+}
+
 TEST(classic_pad_shift_phase) {
     start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_2ms);
     ASSERT_EQ(floss_link_shift_phase(100), FLOSS_ERR_STATE); /* no session */
@@ -1342,6 +1370,7 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
     TEST_CASE(reinit_forgets_link),
     TEST_CASE(classic_pad_shift_phase),
+    TEST_CASE(classic_page_timeout),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),

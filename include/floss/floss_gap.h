@@ -119,6 +119,12 @@ floss_err_t floss_gap_set_scan(bool discoverable, bool connectable);
  */
 floss_err_t floss_gap_set_page_scan(uint16_t interval, uint16_t window, bool interlaced);
 
+/**
+ * How long a page (an outgoing connection) tries before failing, in ms. Default 5120.
+ * Kept across controller restarts.
+ */
+floss_err_t floss_gap_set_page_timeout(uint16_t ms);
+
 /** Rebuild and resend the Extended Inquiry Response (name + service UUIDs). Called automatically. */
 floss_err_t floss_gap_update_eir(void);
 

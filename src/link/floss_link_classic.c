@@ -731,6 +731,9 @@ static floss_err_t cl_init(void) {
             floss_link_peer_clear(); /* the waiting side remembers nobody */
         }
     }
+    if (err == FLOSS_OK && !is_waiting() && cfg()->classic_page_timeout_ms) {
+        err = floss_gap_set_page_timeout(cfg()->classic_page_timeout_ms);
+    }
     if (err == FLOSS_OK && is_waiting()) {
         err = floss_l2cap_register_psm(FLOSS_LINK_PSM, &s_chan_ops, NULL, FLOSS_SEC_ENCRYPTED);
         if (err == FLOSS_OK) {
