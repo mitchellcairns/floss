@@ -20,7 +20,8 @@
  * record and check the flag once at the end.
  *
  * floss_de_header() is the single place that decodes element headers, for
- * the server's request parser and for record validation.
+ * the server's request parser, record validation and the client's result
+ * walker.
  */
 #include "floss_sdp_priv.h"
 
@@ -308,4 +309,31 @@ uint16_t floss_de_header(const uint8_t *p, uint16_t avail, uint8_t *type, uint32
     *type = t;
     *len = n;
     return hdr;
+}
+
+/* ------------------------------------------------------------------------ */
+/* UUIDs                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Expand a 16/32/128-bit UUID payload to 128 bits. Short UUIDs are aliases
+ * into the base UUID 00000000-0000-1000-8000-00805F9B34FB: the 16/32-bit
+ * value replaces the first 32 bits. Comparing everything at full width makes
+ * a 16-bit pattern match a 128-bit record entry and vice versa.
+ */
+void floss_sdp_uuid_promote(const uint8_t *p, uint32_t len, uint8_t out[16])
+{
+    static const uint8_t base[16] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+                                     0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
+    if (len == 16) {
+        memcpy(out, p, 16);
+        return;
+    }
+    memcpy(out, base, 16);
+    if (len == 2) {
+        out[2] = p[0];
+        out[3] = p[1];
+    } else { /* 4 */
+        memcpy(out, p, 4);
+    }
 }

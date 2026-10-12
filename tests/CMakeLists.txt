@@ -46,6 +46,8 @@ floss_add_test(test_l2cap    ${FLOSS_TEST_INTEGRATION})
 floss_add_test(test_perf     ${FLOSS_TEST_INTEGRATION})
 floss_add_test(test_le_central ${FLOSS_TEST_INTEGRATION})
 floss_add_test(test_link     ${FLOSS_TEST_INTEGRATION})
+floss_add_test(test_sdp_client ${FLOSS_TEST_INTEGRATION})
+floss_add_test(test_rfcomm   ${FLOSS_TEST_INTEGRATION})
 
 # The benchmark is informative; keep it out of quick default runs' critical path.
 set_tests_properties(test_perf PROPERTIES LABELS perf)

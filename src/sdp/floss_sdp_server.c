@@ -132,29 +132,6 @@ static uint16_t hash_fold(uint32_t h)
     return (uint16_t)((h >> 16) ^ h);
 }
 
-/**
- * Expand a 16/32/128-bit UUID payload to 128 bits. Short UUIDs are aliases
- * into the base UUID 00000000-0000-1000-8000-00805F9B34FB: the 16/32-bit
- * value replaces the first 32 bits. Comparing everything at full width makes
- * a 16-bit pattern match a 128-bit record entry and vice versa.
- */
-static void uuid_promote(const uint8_t *p, uint32_t len, uint8_t out[16])
-{
-    static const uint8_t base[16] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
-                                     0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
-    if (len == 16) {
-        memcpy(out, p, 16);
-        return;
-    }
-    memcpy(out, base, 16);
-    if (len == 2) {
-        out[2] = p[0];
-        out[3] = p[1];
-    } else { /* 4 */
-        memcpy(out, p, 4);
-    }
-}
-
 /** Header size of the most compact sequence header for `content` bytes. */
 static uint8_t seq_hdr_len(uint32_t content)
 {
@@ -316,7 +293,7 @@ static bool record_matches(const floss_sdp_record_t *rec, const sdp_req_t *rq)
         }
         if (t == FLOSS_DE_TYPE_UUID) {
             uint8_t u[16];
-            uuid_promote(p + h, len, u);
+            floss_sdp_uuid_promote(p + h, len, u);
             for (uint8_t i = 0; i < rq->n_uuids; i++) {
                 if (memcmp(u, rq->uuids[i], 16) == 0) {
                     got |= 1u << i;
@@ -453,7 +430,7 @@ static uint16_t parse_pattern(cursor_t *c, sdp_req_t *rq)
         if (eh == 0 || t != FLOSS_DE_TYPE_UUID || rq->n_uuids >= SDP_MAX_PATTERN) {
             return SDP_ERR_INVALID_SYNTAX;
         }
-        uuid_promote(p + eh, len, rq->uuids[rq->n_uuids++]);
+        floss_sdp_uuid_promote(p + eh, len, rq->uuids[rq->n_uuids++]);
         p += eh + len;
     }
     if (rq->n_uuids == 0) {
@@ -944,4 +921,7 @@ void floss_sdp_init(void)
     if (rc != FLOSS_OK) {
         FLOSS_LOGE(SDP, "cannot register PSM 0x0001: %s", floss_err_str(rc));
     }
+#if FLOSS_ENABLE_SDP_CLIENT
+    floss_sdp_client_init();
+#endif
 }

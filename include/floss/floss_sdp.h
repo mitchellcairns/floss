@@ -2,7 +2,7 @@
  * FLOSS - Free, Lightweight, Open Short-range Stack
  * SPDX-License-Identifier: Unlicense
  *
- * floss_sdp.h - Service Discovery server.
+ * floss_sdp.h - Service Discovery server and client.
  *
  * A record is a pre-serialised byte array: one Data Element Sequence of
  * (attribute ID uint16, value) pairs sorted by ascending attribute ID.
@@ -10,6 +10,11 @@
  * HID / Device ID builders below), register it, done. The server answers
  * ServiceSearch, ServiceAttribute and ServiceSearchAttribute requests with
  * continuation support, straight from that array (no per-request building).
+ *
+ * The client (FLOSS_ENABLE_SDP_CLIENT) asks a peer's server: one
+ * ServiceSearchAttribute query at a time, reassembled into a bounded buffer
+ * and handed to a callback, plus a walker for the result and a shortcut
+ * that looks up the RFCOMM server channel of a service (docs/SDP.md).
  */
 #ifndef FLOSS_SDP_H
 #define FLOSS_SDP_H
@@ -25,6 +30,9 @@ extern "C" {
 /* ------------------------------------------------------------------------ */
 
 #define FLOSS_UUID_SDP                    0x0001
+#ifndef FLOSS_UUID_RFCOMM
+#define FLOSS_UUID_RFCOMM                 0x0003
+#endif
 #define FLOSS_UUID_L2CAP                  0x0100
 #define FLOSS_UUID_HIDP                   0x0011
 #define FLOSS_UUID_PUBLIC_BROWSE_ROOT     0x1002
@@ -182,6 +190,120 @@ typedef struct {
 
 /** Build a Device ID (PnP Information) record. Returns length or 0 on overflow. */
 uint16_t floss_sdp_build_did(uint8_t *buf, uint16_t cap, const floss_sdp_did_params_t *p);
+
+/* ------------------------------------------------------------------------ */
+/* Client                                                                   */
+/* ------------------------------------------------------------------------ */
+
+#if FLOSS_ENABLE_SDP_CLIENT
+
+/* ErrorCode values of an SDP Error Response (status > 0 in the callbacks). */
+#define FLOSS_SDP_ERR_UNSUPPORTED_VERSION 0x0001
+#define FLOSS_SDP_ERR_INVALID_HANDLE      0x0002
+#define FLOSS_SDP_ERR_INVALID_SYNTAX      0x0003
+#define FLOSS_SDP_ERR_INVALID_PDU_SIZE    0x0004
+#define FLOSS_SDP_ERR_INVALID_CONT        0x0005
+#define FLOSS_SDP_ERR_INSUFFICIENT_RES    0x0006
+
+/**
+ * Query result.
+ *
+ * status:
+ *   0                      success: attr_lists/len hold the complete
+ *                          AttributeLists (a sequence of attribute-list
+ *                          sequences, one per matching record; an empty
+ *                          sequence when nothing matched)
+ *   > 0                    the peer answered with an Error Response; status
+ *                          is its ErrorCode (FLOSS_SDP_ERR_*)
+ *   FLOSS_ERR_TIMEOUT      no answer for FLOSS_SDP_CLIENT_TIMEOUT_MS
+ *   FLOSS_ERR_IO           the channel did not open, the peer closed it, or
+ *                          the link dropped
+ *   FLOSS_ERR_UNSUPPORTED  the peer refused the SDP channel (no such PSM)
+ *   FLOSS_ERR_NOMEM        the result is larger than FLOSS_SDP_CLIENT_BUF
+ *   FLOSS_ERR_PROTOCOL     malformed or unexpected response
+ * On failure attr_lists is NULL and len 0. attr_lists is valid only during
+ * the call. The callback runs in the stack context and may start the next
+ * query.
+ */
+typedef void (*floss_sdp_attr_fn)(uint16_t handle, int status, const uint8_t *attr_lists, uint16_t len,
+                                  void *user);
+
+/**
+ * ServiceSearchAttribute query on the existing ACL link `handle`: opens an
+ * L2CAP channel to the peer's PSM 0x0001 (no security), asks for the
+ * attributes attr_lo..attr_hi of every record whose service search pattern
+ * matches the UUID (uuid_len 2, 4 or 16 bytes, big-endian as on the wire),
+ * follows continuation state until the answer is complete, closes the
+ * channel and reports through cb exactly once.
+ *
+ * @return FLOSS_OK (cb follows), FLOSS_ERR_BUSY (a query is already
+ *         running), FLOSS_ERR_INVALID, or an error from floss_l2cap_connect()
+ *         (no callback in those cases).
+ */
+floss_err_t floss_sdp_query_ssa(uint16_t handle, const uint8_t *uuid_be, uint8_t uuid_len, uint16_t attr_lo,
+                                uint16_t attr_hi, floss_sdp_attr_fn cb, void *user);
+
+/** True while a query runs (a new one would return FLOSS_ERR_BUSY). */
+bool floss_sdp_query_busy(void);
+
+/**
+ * RFCOMM server channel lookup result: status 0 and channel 1..30, or a
+ * floss_sdp_attr_fn status (channel 0). FLOSS_ERR_NOT_FOUND means the query
+ * worked but no matching record publishes an RFCOMM protocol descriptor.
+ */
+typedef void (*floss_sdp_rfcomm_fn)(uint16_t handle, int status, uint8_t channel, void *user);
+
+/**
+ * Look up the RFCOMM server channel of the service class uuid128_be (16
+ * bytes, big-endian) on the peer: a floss_sdp_query_ssa() for the
+ * ProtocolDescriptorList (0x0004), then floss_sdp_rfcomm_channel().
+ * Same return values and busy rule as floss_sdp_query_ssa().
+ */
+floss_err_t floss_sdp_query_rfcomm_channel(uint16_t handle, const uint8_t uuid128_be[16], floss_sdp_rfcomm_fn cb,
+                                           void *user);
+
+/* ---- Result walker (pure functions; bounds-checked, never read past len) - */
+
+/** Iterator over the records (attribute lists) of a query result. */
+typedef struct {
+    const uint8_t *p;
+    const uint8_t *end;
+    bool single;     /**< data was one attribute list, not a list of them */
+} floss_sdp_iter_t;
+
+/**
+ * Start iterating `data`: either an AttributeLists sequence as delivered to
+ * floss_sdp_attr_fn, or a single attribute list (one record).
+ * @return FLOSS_OK or FLOSS_ERR_PROTOCOL (not a well-formed sequence).
+ */
+floss_err_t floss_sdp_iter_init(floss_sdp_iter_t *it, const uint8_t *data, uint16_t len);
+
+/**
+ * Next record: *record and *record_len get the attribute-list sequence, header
+ * included. @return FLOSS_OK, FLOSS_ERR_NOT_FOUND at the end, or
+ * FLOSS_ERR_PROTOCOL (malformed element; iteration stops).
+ */
+floss_err_t floss_sdp_iter_next(floss_sdp_iter_t *it, const uint8_t **record, uint16_t *record_len);
+
+/**
+ * Find attribute attr_id in the first record (of `data`, same forms as
+ * floss_sdp_iter_init()) that has it. *value and *value_len get the attribute's
+ * data element, header included (decode it with floss_de_header()).
+ * @return FLOSS_OK, FLOSS_ERR_NOT_FOUND, or FLOSS_ERR_PROTOCOL.
+ */
+floss_err_t floss_sdp_find_attr(const uint8_t *data, uint16_t len, uint16_t attr_id, const uint8_t **value,
+                                uint16_t *value_len);
+
+/**
+ * RFCOMM server channel from the ProtocolDescriptorList of the first record
+ * in `data` that has one with an RFCOMM descriptor (UUID 0x0003 in its 16,
+ * 32 or 128-bit form, followed by a uint8 channel 1..30). Alternative
+ * protocol descriptor lists are searched too.
+ * @return FLOSS_OK, FLOSS_ERR_NOT_FOUND, or FLOSS_ERR_PROTOCOL.
+ */
+floss_err_t floss_sdp_rfcomm_channel(const uint8_t *data, uint16_t len, uint8_t *channel);
+
+#endif /* FLOSS_ENABLE_SDP_CLIENT */
 
 /* ------------------------------------------------------------------------ */
 /* Lifecycle (called by floss.c)                                            */

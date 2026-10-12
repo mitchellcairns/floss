@@ -29,20 +29,21 @@ implemented, not yet covered by either.
 | | GAP: discoverable/connectable, Class of Device, EIR, Secure Simple Pairing, bonding, legacy PIN fallback, sniff/role/QoS/supervision/flush timeout | HW (SSP P-256 bond with Windows), Unit |
 | | L2CAP basic mode: signaling, configuration, MTU, flush timeout, echo, info | HW, Unit |
 | | SDP server: pre-serialised records, continuation, HID + Device ID builders | HW (host reads HID + DID records), Unit |
+| | SDP client: ServiceSearchAttribute with continuation, result walker, RFCOMM channel lookup | Unit |
 | | HID device: all HIDP transactions, latest-wins input mailbox, paced or on-change reports, auto-reconnect, virtual cable | HW (~720 reports/s, see PERFORMANCE.md), Unit |
 | **LE** | LE GAP: advertising, connections, data length, 2M PHY, connection parameter updates | HW |
 | | ATT/GATT server: static attribute table, GAP/GATT/DIS/Battery services, CCCDs persisted per bond | HW, Unit (MTU exchange) |
 | | SMP: legacy + Secure Connections (P-256 ECDH via controller, software AES-CMAC), bonding, IRK resolution | HW (SC just works with Windows, bonded reconnect) |
 | | HID-over-GATT, paced per connection event | HW (one report per 15 ms event) |
-| **RFCOMM** | Multiplexer with credit-based flow control + serial port service (`examples/serial_echo`) | Impl |
+| **RFCOMM** | Multiplexer with credit-based flow control + serial port service (`examples/serial_echo`) | HW (client role, Windows 11 host), Unit |
 | **Transports** | H4 over any non-blocking byte stream (UART, USB-CDC, TCP, pipe) | Unit |
 | | CYW43 shared bus (Pico W / Pico 2 W), fast bulk path | HW |
 | | Simulated controller (tests, desktop demos) | Unit (6 suites) |
 | **Ports** | Raspberry Pi Pico W / Pico 2 W (`floss_gamepad`, `floss_le_gamepad`) | HW |
 | | POSIX / Windows desktop | Builds |
 
-See [docs/LE.md](docs/LE.md) and [docs/RFCOMM.md](docs/RFCOMM.md) for the
-LE and RFCOMM APIs.
+See [docs/LE.md](docs/LE.md), [docs/RFCOMM.md](docs/RFCOMM.md) and
+[docs/SDP.md](docs/SDP.md) for the LE, RFCOMM and SDP client APIs.
 
 ## Quick start
 
@@ -158,7 +159,7 @@ tools/
   pico_flash.ps1        flash a running Pico W from Windows (1200-baud reboot)
   hostprobe/            Windows host-side report timing probe + experiment script
 cmake/floss.cmake     drop-in CMake targets: floss (all of src/), floss_h4, floss_sim
-docs/                 architecture, porting, debugging, HID, performance, LE, RFCOMM, legal
+docs/                 architecture, porting, debugging, HID, performance, LE, RFCOMM, SDP, legal
 ```
 
 ## Performance philosophy
@@ -192,6 +193,7 @@ tuning hints), a binary **trace** ring cheap enough for hot paths, and
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | measured report timing on hardware, what each latency knob does, defaults |
 | [LE.md](docs/LE.md) | LE GAP, GATT tables, HID over GATT, SMP, storage keys, `le_gamepad` |
 | [RFCOMM.md](docs/RFCOMM.md) | RFCOMM multiplexer, serial port API, `serial_echo` |
+| [SDP.md](docs/SDP.md) | SDP client: queries, result walker, RFCOMM channel lookup |
 | [ports/pico_w/README.md](ports/pico_w/README.md) | Pico W build, flash, console and tuning keys |
 | [tools/README.md](tools/README.md) | snoop conversion, serial monitor, flashing, host-side timing probe |
 | [LEGAL.md](docs/LEGAL.md) | licensing, naming, clean-room policy |

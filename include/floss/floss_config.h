@@ -118,6 +118,21 @@
 #define FLOSS_ENABLE_RFCOMM 1
 #endif
 
+/** SDP client: ServiceSearchAttribute queries to a peer (floss_sdp_query_ssa()). */
+#ifndef FLOSS_ENABLE_SDP_CLIENT
+#define FLOSS_ENABLE_SDP_CLIENT 1
+#endif
+
+/** SDP client: bytes of reassembled AttributeLists one query can return. */
+#ifndef FLOSS_SDP_CLIENT_BUF
+#define FLOSS_SDP_CLIENT_BUF 512
+#endif
+
+/** SDP client: a query fails when the peer makes no progress for this long. */
+#ifndef FLOSS_SDP_CLIENT_TIMEOUT_MS
+#define FLOSS_SDP_CLIENT_TIMEOUT_MS 10000
+#endif
+
 /** Point-to-point pad <-> dongle link profile (floss_link.h). */
 #ifndef FLOSS_ENABLE_LINK
 #define FLOSS_ENABLE_LINK 1

@@ -285,6 +285,19 @@ floss_err_t floss_hci_acl_send(floss_buf_t *buf);
 /** True if a packet for this link would go to the controller immediately. */
 bool floss_hci_acl_can_send_now(uint16_t handle);
 
+/**
+ * Newest-only send gating: true if a packet for this link would go to the
+ * controller now without queueing behind earlier ones, AND fewer than
+ * max_inflight x floss_hci_completion_batch() of the link's packets are
+ * still in the controller. A packet waiting in the controller can no longer
+ * be replaced by fresher state, so an application that sends "latest value"
+ * data (input reports, controller state over RFCOMM, ...) checks this and
+ * skips or coalesces a sample instead of queueing it. max_inflight 0 means
+ * no in-flight cap (same as floss_hci_acl_can_send_now()). This is the rule
+ * the HID and HID-over-GATT input paths use.
+ */
+bool floss_hci_acl_can_send_fresh(uint16_t handle, uint8_t max_inflight);
+
 /** Free controller ACL buffers right now. */
 uint16_t floss_hci_acl_credits(void);
 

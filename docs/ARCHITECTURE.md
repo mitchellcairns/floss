@@ -52,7 +52,7 @@ in `include/floss/*.h` or `src/floss_internal.h`.
 | `src/hci/` | `floss_hci.c`, `floss_hci_acl.c`, `floss_hci_bringup.c`, `floss_hci_status.c`, `floss_hci_priv.h` | Command queue, event dispatch, connection table; ACL credits, fragmentation, reassembly; controller bring-up; status/opcode names |
 | `src/gap/` | `floss_gap.c`, `floss_gap_security.c`, `floss_gap_bonds.c`, `floss_gap_eir.c`, `floss_gap_internal.h` | Scan modes, link policy, connections; pairing (SSP, legacy PIN); bond store; EIR |
 | `src/l2cap/` | `floss_l2cap.c`, `floss_l2cap_sig.c`, `floss_l2cap_priv.h` | Channels and data path; signaling |
-| `src/sdp/` | `floss_sdp_server.c`, `floss_sdp_records.c`, `floss_sdp_de.c`, `floss_sdp_priv.h` | SDP server, HID/DID record builders, data elements |
+| `src/sdp/` | `floss_sdp_server.c`, `floss_sdp_client.c`, `floss_sdp_records.c`, `floss_sdp_de.c`, `floss_sdp_priv.h` | SDP server and client (queries, result walker), HID/DID record builders, data elements |
 | `src/hid/` | `floss_hid.c` | Classic HID device (HIDP, mailbox, pacing, reconnect) |
 | `src/le/` | `floss_le.c`, `floss_att.c`, `floss_gatt.c`, `floss_gatt_services.c`, `floss_hogp.c`, `floss_smp.c`, `floss_smp_crypto.c/.h`, `floss_aes.c/.h` | See [LE.md](LE.md#1-map) |
 | `src/rfcomm/` | `floss_rfcomm.c`, `floss_rfcomm_mux.c`, `floss_spp.c`, `floss_rfcomm_int.h` | See [RFCOMM.md](RFCOMM.md#1-model) |
