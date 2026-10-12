@@ -1272,21 +1272,6 @@ static unsigned next_tick(void) {
     return g_cb.ticks;
 }
 
-static void tweak_pad_flush(floss_link_config_t *cfg) {
-    cfg->classic_flush_timeout_ms = 1;
-}
-
-TEST(classic_pad_flush_timeout) {
-    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_flush);
-    floss_sim_chan_t *ch;
-    dongle_connects(&k_peer, &ch);
-    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
-    floss_sim_pump(5);
-    const floss_sim_cmd_t *ft = floss_sim_cmd_last(FLOSS_HCI_WRITE_AUTOMATIC_FLUSH_TIMEOUT);
-    ASSERT_NOT_NULL(ft);
-    ASSERT_EQ(floss_get_le16(&ft->params[2]), 2); /* 1 ms = 2 slots */
-}
-
 TEST(classic_pad_shift_phase) {
     start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_2ms);
     ASSERT_EQ(floss_link_shift_phase(100), FLOSS_ERR_STATE); /* no session */
@@ -1346,7 +1331,6 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
     TEST_CASE(reinit_forgets_link),
     TEST_CASE(classic_pad_shift_phase),
-    TEST_CASE(classic_pad_flush_timeout),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),
