@@ -88,7 +88,12 @@ static void cb_output(uint8_t id, const uint8_t *data, uint8_t len) {
     g_cb.out_len = len;
     memcpy(g_cb.out_data, data, len);
 }
+static uint32_t g_tick_us[64];
+
 static void cb_tick(void) {
+    if (g_cb.ticks < 64) {
+        g_tick_us[g_cb.ticks] = floss_hal_time_us();
+    }
     g_cb.ticks++;
 }
 
@@ -1244,6 +1249,55 @@ TEST(classic_no_keys_pad_takes_remembered_at_once) {
     floss_tc_assert_sim_clean();
 }
 
+static void tweak_pad_2ms(floss_link_config_t *cfg) {
+    cfg->report_interval_us = 2000;
+}
+
+/** Gap between report ticks i-1 and i is want_us, give or take one pump step. */
+#define ASSERT_TICK_GAP(i, want_us)                    do {                                                   ASSERT_GE(tick_gap(i), (want_us) - 100u);          ASSERT_LE(tick_gap(i), (want_us) + 100u);      } while (0)
+
+/** Gap between report ticks i-1 and i. */
+static uint32_t tick_gap(unsigned i) {
+    return g_tick_us[i] - g_tick_us[i - 1];
+}
+
+static bool cond_tick_after(void *arg) {
+    return g_cb.ticks > *(unsigned *)arg;
+}
+
+/** Pump until the next report tick; returns the index of the tick after it. */
+static unsigned next_tick(void) {
+    unsigned t = g_cb.ticks;
+    ASSERT_TRUE(floss_sim_pump_until(cond_tick_after, &t, 100));
+    return g_cb.ticks;
+}
+
+TEST(classic_pad_shift_phase) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_2ms);
+    ASSERT_EQ(floss_link_shift_phase(100), FLOSS_ERR_STATE); /* no session */
+    floss_sim_chan_t *ch;
+    dongle_connects(&k_peer, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+    floss_sim_pump_us(10000);
+
+    /* Later: one gap grows by the shift, the period stays. Shifts go in just after a report. */
+    unsigned t = next_tick();
+    ASSERT_EQ(floss_link_shift_phase(500), FLOSS_OK);
+    floss_sim_pump_us(8000);
+    ASSERT_GE(g_cb.ticks, t + 3);
+    ASSERT_TICK_GAP(t, 2500u);
+    ASSERT_TICK_GAP(t + 1, 2000u);
+    ASSERT_TICK_GAP(t + 2, 2000u);
+
+    /* Earlier. */
+    t = next_tick();
+    ASSERT_EQ(floss_link_shift_phase(-700), FLOSS_OK);
+    floss_sim_pump_us(8000);
+    ASSERT_GE(g_cb.ticks, t + 3);
+    ASSERT_TICK_GAP(t, 1300u);
+    ASSERT_TICK_GAP(t + 1, 2000u);
+}
+
 TEST(reinit_forgets_link) {
     start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
     add_sim_dev(&k_peer, "FLOSS Dongle", -60, true);
@@ -1276,6 +1330,7 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_no_keys_pad_prefers_remembered_then_strongest),
     TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
     TEST_CASE(reinit_forgets_link),
+    TEST_CASE(classic_pad_shift_phase),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),

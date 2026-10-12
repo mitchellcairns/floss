@@ -241,6 +241,15 @@ floss_err_t floss_link_forget(void);
 /** Pad: publish the newest input report (ISR / other-core safe). len <= FLOSS_LINK_MAX_REPORT. */
 floss_err_t floss_link_set_input(uint8_t report_id, const uint8_t *data, uint8_t len);
 
+/**
+ * Pad, paced: move the report clock by delta_us (positive = later), from the next
+ * report on; the period stays the same. Lets the dongle line the pad's reports up with
+ * its own output clock (a USB host's polls), which the pad cannot see. A shift that
+ * puts the next report in the past sends it at once. STATE when not paced or not
+ * connected.
+ */
+floss_err_t floss_link_shift_phase(int32_t delta_us);
+
 /** Dongle: send an output report to the pad (copied; BUSY if no buffer/credit). */
 floss_err_t floss_link_send_output(uint8_t report_id, const uint8_t *data, uint8_t len);
 
