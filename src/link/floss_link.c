@@ -637,6 +637,15 @@ floss_err_t floss_link_shift_phase(int32_t delta_us) {
     return FLOSS_OK;
 }
 
+bool floss_link_next_report_at(uint32_t *t_us) {
+    if (!t_us || !L.cfg || !L.pad || !L.session || L.cfg->report_interval_us == 0 ||
+        L.cfg->report_interval_us == FLOSS_LINK_INTERVAL_CONN) {
+        return false;
+    }
+    *t_us = L.tick_deadline;
+    return true;
+}
+
 static void start_pacing(void) {
     floss_timer_stop(&L.tick_timer);
     L.due_mask = 0;

@@ -250,6 +250,13 @@ floss_err_t floss_link_set_input(uint8_t report_id, const uint8_t *data, uint8_t
  */
 floss_err_t floss_link_shift_phase(int32_t delta_us);
 
+/**
+ * Pad, paced: when the next report goes (floss_hal_time_us()), so the application
+ * can build it just before instead of in on_report_tick, which delays the send by
+ * however long building takes. False when not paced or not connected.
+ */
+bool floss_link_next_report_at(uint32_t *t_us);
+
 /** Dongle: send an output report to the pad (copied; BUSY if no buffer/credit). */
 floss_err_t floss_link_send_output(uint8_t report_id, const uint8_t *data, uint8_t len);
 

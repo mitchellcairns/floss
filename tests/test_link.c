@@ -1289,6 +1289,17 @@ TEST(classic_pad_shift_phase) {
     ASSERT_TICK_GAP(t + 1, 2000u);
     ASSERT_TICK_GAP(t + 2, 2000u);
 
+    /* The next report's time, ahead of its tick */
+    uint32_t at;
+    ASSERT_TRUE(floss_link_next_report_at(&at));
+    unsigned before = g_cb.ticks;
+    while (g_cb.ticks == before) {
+        ASSERT_TRUE((int32_t)(floss_hal_time_us() - at) < 200); /* not past it without a tick */
+        floss_sim_pump(1);
+    }
+    ASSERT_TRUE((int32_t)(g_tick_us[before] - at) >= 0);
+    ASSERT_TRUE((int32_t)(g_tick_us[before] - at) <= 100);
+
     /* Earlier. */
     t = next_tick();
     ASSERT_EQ(floss_link_shift_phase(-700), FLOSS_OK);
