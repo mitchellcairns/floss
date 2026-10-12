@@ -260,6 +260,8 @@ static struct {
     bool app_connected;       /**< on_connected delivered for this link */
 
     bool reconnecting;        /**< we are paging the host / opening its channels */
+    bool page_cancelled;      /**< we cancelled a page to cancelled_addr; if it completes anyway, close it */
+    floss_addr_t cancelled_addr;
     uint8_t reconnect_retries;
     bool auth_failed;         /**< host rejected our key: be discoverable again */
     bool local_teardown;      /**< we are closing the session */
@@ -1420,6 +1422,7 @@ static void hid_page_host(void) {
         return;
     }
     hid.handle = HID_NO_HANDLE;
+    hid.page_cancelled = false;
     floss_err_t err = floss_gap_connect(&hid.host);
     if (err != FLOSS_OK) {
         FLOSS_LOGW(HID, "page failed to start: %s", floss_err_str(err));
@@ -1478,6 +1481,8 @@ floss_err_t floss_hid_disconnect(void) {
             /* Still paging (or waiting to retry): cancel. */
             floss_timer_stop(&hid.reconnect_timer);
             floss_gap_connect_cancel(&hid.host);
+            hid.page_cancelled = true;
+            hid.cancelled_addr = hid.host;
             hid.reconnecting = false;
             hid.state = FLOSS_HID_STATE_IDLE;
             hid_become_visible();
@@ -1577,6 +1582,8 @@ static void hid_chan_open(floss_l2cap_chan_t *ch, uint16_t status, bool is_ctrl)
             /* Another host connected while we were paging ours: serve it. */
             floss_timer_stop(&hid.reconnect_timer);
             floss_gap_connect_cancel(&hid.host);
+            hid.page_cancelled = true;
+            hid.cancelled_addr = hid.host;
             hid.reconnecting = false;
         }
         hid.handle = ch->handle;
@@ -1705,13 +1712,20 @@ static void hid_on_link_up(const floss_gap_evt_t *evt) {
         }
         return;
     }
-    if (hid.state == FLOSS_HID_STATE_IDLE && c && c->initiator && floss_addr_eq(&evt->addr, &hid.host)) {
-        /* A page we cancelled completed anyway: nobody wants this link. */
-        floss_gap_disconnect(evt->handle, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED);
+    if (hid.page_cancelled && c && c->initiator && floss_addr_eq(&evt->addr, &hid.cancelled_addr)) {
+        /* A page we cancelled completed anyway: nobody wants this link. Links to the
+         * host that something else paged (RFCOMM, the application) are left alone. */
+        hid.page_cancelled = false;
+        if (hid.state == FLOSS_HID_STATE_IDLE || !floss_addr_eq(&evt->addr, &hid.host)) {
+            floss_gap_disconnect(evt->handle, FLOSS_HCI_ERR_REMOTE_USER_TERMINATED);
+        }
     }
 }
 
 static void hid_on_connect_failed(const floss_gap_evt_t *evt) {
+    if (hid.page_cancelled && floss_addr_eq(&evt->addr, &hid.cancelled_addr)) {
+        hid.page_cancelled = false; /* the cancelled page is over */
+    }
     if (hid.reconnecting && hid.state == FLOSS_HID_STATE_CONNECTING && floss_addr_eq(&evt->addr, &hid.host)) {
         hid_reconnect_failed(evt->status);
     }
