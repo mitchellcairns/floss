@@ -63,11 +63,7 @@ for latency:
 The Number Of Completed Packets event arrives for **two packets at a time**,
 3-8 ms after they left; with a single packet outstanding it waits **~250 ms**.
 A cap below 4 therefore starves the link (the stack believes packets are still
-queued when they are already delivered). The link profile avoids the wait altogether: its dongle
-acknowledges every INPUT (`input_acks`, an ACK in the radio slot that answers the
-pad's packet anyway), and the pad counts reports in flight by those. Paced at one
-report per slot pair, counting by completion events held reports back and handed
-them over two at a time, the second waiting a slot pair in the radio. FLOSS models this as a chipset quirk:
+queued when they are already delivered). FLOSS models this as a chipset quirk:
 `floss_chipset_t.completion_batch` (CYW43 = 2), and the HID cap
 `max_inflight` (default 2) is multiplied by it, giving 4 on the Pico W and 2
 on controllers that report packets one by one.

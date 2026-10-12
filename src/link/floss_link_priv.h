@@ -121,14 +121,6 @@
 
 /** HELLO flags. */
 #define FLOSS_LINK_HELLO_F_IDLE_SNIFF 0x01 /**< pad: will request sniff when idle (dongle must allow it) */
-#define FLOSS_LINK_HELLO_F_ACKS       0x02 /**< dongle: acknowledges every INPUT (ACK PDU) */
-
-#define FLOSS_LINK_ACK_LEN 3u /**< type seq(2) */
-
-/** Pad: no ACK for this long while reports wait: count by completion events again. */
-#ifndef FLOSS_LINK_ACK_TIMEOUT_US
-#define FLOSS_LINK_ACK_TIMEOUT_US 20000u
-#endif
 
 /* ------------------------------------------------------------------------ */
 /* Peer record (FLOSS_LINK_STORE_KEY_PEER)                                  */
