@@ -280,7 +280,9 @@ TEST(sdpc_error_response) {
     wait_calls(1);
     ASSERT_EQ(g_res.status, FLOSS_SDP_ERR_INVALID_SYNTAX);
     ASSERT_EQ(g_res.channel, 0);
-    ASSERT_EQ(floss_sim_sdp_server_stats()->errors_sent, 1);
+    /* Invalid syntax gets exactly one retry (all attributes) before giving up. */
+    ASSERT_EQ(floss_sim_sdp_server_stats()->errors_sent, 2);
+    ASSERT_EQ(floss_sim_sdp_server_stats()->last_range, 0x0000FFFFu);
     assert_channel_closed(h);
     floss_tc_assert_sim_clean();
 }

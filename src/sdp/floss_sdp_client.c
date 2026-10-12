@@ -80,6 +80,7 @@ static struct {
     uint8_t cont[SDPC_CONT_MAX];
     uint8_t cont_len;
     uint8_t empty_rounds;
+    bool syntax_retry;            /**< already retried once after an invalid-syntax error */
     uint8_t req[SDPC_REQ_MAX];
     uint16_t req_len;
     uint16_t len;                 /**< bytes reassembled in buf */
@@ -158,12 +159,24 @@ static void build_request(void)
     floss_put_be16(p + n, cl.max_bytes);
     n = (uint16_t)(n + 2);
 
-    /* AttributeIDList: one uint32 range. */
+    /*
+     * AttributeIDList: a single ID as uint16, a span as one uint32 range.
+     * A one-ID range (lo == hi) is legal but unusual, and some servers reject
+     * it with "invalid request syntax"; the uint16 form is what every common
+     * client sends for one attribute.
+     */
     p[n++] = FLOSS_DE_HDR(FLOSS_DE_TYPE_SEQ, FLOSS_DE_SIZE_LEN8);
-    p[n++] = 5;
-    p[n++] = FLOSS_DE_HDR_UINT32;
-    floss_put_be32(p + n, ((uint32_t)cl.attr_lo << 16) | cl.attr_hi);
-    n = (uint16_t)(n + 4);
+    if (cl.attr_lo == cl.attr_hi) {
+        p[n++] = 3;
+        p[n++] = FLOSS_DE_HDR_UINT16;
+        floss_put_be16(p + n, cl.attr_lo);
+        n = (uint16_t)(n + 2);
+    } else {
+        p[n++] = 5;
+        p[n++] = FLOSS_DE_HDR_UINT32;
+        floss_put_be32(p + n, ((uint32_t)cl.attr_lo << 16) | cl.attr_hi);
+        n = (uint16_t)(n + 4);
+    }
 
     p[n++] = cl.cont_len;
     memcpy(p + n, cl.cont, cl.cont_len);
@@ -300,6 +313,18 @@ static void cl_on_data(floss_l2cap_chan_t *chan, const uint8_t *data, uint16_t l
         break;
     case SDPC_PDU_ERROR_RSP: {
         uint16_t code = plen >= 2 ? floss_get_be16(p) : 0;
+        if (code == FLOSS_SDP_ERR_INVALID_SYNTAX && !cl.syntax_retry && cl.len == 0 && cl.cont_len == 0 &&
+            !(cl.attr_lo == 0x0000 && cl.attr_hi == 0xFFFF)) {
+            /* Interoperability: a server that dislikes our attribute list
+             * gets one retry with the plainest form, all attributes. */
+            FLOSS_LOGW(SDP, "client: peer refused the request syntax, retrying with all attributes");
+            cl.syntax_retry = true;
+            cl.attr_lo = 0x0000;
+            cl.attr_hi = 0xFFFF;
+            cl.empty_rounds = 0;
+            next_request();
+            break;
+        }
         FLOSS_LOGW(SDP, "client: peer answered error 0x%04x", code);
         query_finish(code != 0 ? (int)code : FLOSS_ERR_PROTOCOL, true);
         break;
@@ -348,6 +373,7 @@ floss_err_t floss_sdp_query_ssa(uint16_t handle, const uint8_t *uuid_be, uint8_t
     cl.attr_hi = attr_hi;
     cl.cont_len = 0;
     cl.empty_rounds = 0;
+    cl.syntax_retry = false;
     cl.len = 0;
     timer_restart();
     FLOSS_LOGD(SDP, "client: query on 0x%03x, attributes 0x%04x-0x%04x", handle, attr_lo, attr_hi);

@@ -46,6 +46,14 @@ header and in [ARCHITECTURE.md](ARCHITECTURE.md).
 | `floss_sdp_find_attr(data, len, attr_id, &value, &value_len)` | Attribute of the first record that has it; `value` is the whole data element (header included, decode with `floss_de_header()`). |
 | `floss_sdp_rfcomm_channel(data, len, &channel)` | RFCOMM server channel from the first record whose ProtocolDescriptorList (or one of its alternatives) contains RFCOMM (UUID 0x0003 in 16, 32 or 128-bit form) followed by a channel 1..30. |
 
+**Request encoding and interoperability.** A single attribute
+(`attr_lo == attr_hi`) is requested as a uint16 attribute ID, a span as one
+uint32 range. A one-ID range is legal but some servers reject it with
+"invalid request syntax" (0x0003). If a server still answers 0x0003 to the
+first request of a query, the client retries once with the plainest form
+(all attributes, 0x0000-0xFFFF) before reporting the error.
+
+
 The walker functions are pure and bounds-checked: every element is decoded
 with `floss_de_header()`, which rejects any length that runs past the bytes
 that remain, so hostile results produce `FLOSS_ERR_PROTOCOL`, never an
