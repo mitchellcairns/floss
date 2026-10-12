@@ -128,6 +128,14 @@ void floss_hid_poll(void);
  */
 void floss_hid_reset(void);
 
+#if FLOSS_ENABLE_LINK
+/**
+ * Forget the link profile (called by floss_init()), like floss_hid_reset():
+ * a re-initialised stack runs without the link until floss_link_init().
+ */
+void floss_link_reset(void);
+#endif
+
 /**
  * The controller (re)started: every link is gone. Called by GAP just before
  * FLOSS_GAP_EVT_READY reaches the listeners, so a connect an application

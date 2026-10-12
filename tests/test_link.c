@@ -1244,6 +1244,20 @@ TEST(classic_no_keys_pad_takes_remembered_at_once) {
     floss_tc_assert_sim_clean();
 }
 
+TEST(reinit_forgets_link) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
+    add_sim_dev(&k_peer, "FLOSS Dongle", -60, true);
+    wait_session_to(&k_peer);
+    ASSERT_NOT_NULL(floss_link_poll_hook);
+
+    /* The application restarts the stack for another profile: the old session must not be polled. */
+    g_transport = floss_tc_sim_init(NULL);
+    ASSERT_EQ(floss_init(&(floss_init_t){.transport = g_transport}), FLOSS_OK);
+    ASSERT_NULL(floss_link_poll_hook);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    floss_sim_pump(50); /* with the stale hook, this polled the old session */
+}
+
 static const floss_test_case_t tests[] = {
     TEST_CASE(config_defaults),
     TEST_CASE(eir_build_and_parse),
@@ -1261,6 +1275,7 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_no_keys_dongle_takes_any_pad),
     TEST_CASE(classic_no_keys_pad_prefers_remembered_then_strongest),
     TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
+    TEST_CASE(reinit_forgets_link),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),

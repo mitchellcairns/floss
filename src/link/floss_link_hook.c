@@ -26,4 +26,9 @@ void floss_link_poll(void)
     }
 }
 
+void floss_link_reset(void)
+{
+    floss_link_poll_hook = NULL;
+}
+
 #endif /* FLOSS_ENABLE_LINK */
