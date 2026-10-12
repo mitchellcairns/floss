@@ -54,4 +54,15 @@
 /** Nesting limit enforced when a record is validated at registration. */
 #define FLOSS_SDP_MAX_NEST 8
 
+/**
+ * Expand a UUID payload of len 2, 4 or 16 bytes (big-endian, as on the wire)
+ * to its 128-bit form via the base UUID (floss_sdp_de.c).
+ */
+void floss_sdp_uuid_promote(const uint8_t *p, uint32_t len, uint8_t out[16]);
+
+#if FLOSS_ENABLE_SDP_CLIENT
+/** Forget any query in progress (floss_sdp_client.c, called by floss_sdp_init()). */
+void floss_sdp_client_init(void);
+#endif
+
 #endif /* FLOSS_SDP_PRIV_H */

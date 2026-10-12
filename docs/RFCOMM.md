@@ -5,9 +5,22 @@ tools, serial-profile peers. Compiled when `FLOSS_ENABLE_RFCOMM=1` (the
 default). Public API: `include/floss/floss_rfcomm.h`.
 
 **Status: implemented** (server and client DLCs, credit-based flow control,
-serial port SDP record). Not yet covered by the ctest suites or verified
-over the air; `examples/serial_echo` is not wired into a port build yet
-(add `examples/serial_echo/serial_echo_app.c` to your firmware target).
+serial port SDP record). `examples/serial_echo` is not wired into a port
+build yet (add `examples/serial_echo/serial_echo_app.c` to your firmware
+target).
+
+- **Client role verified over the air** against a Windows 11 host (Intel
+  Wireless-AC 3168): FLOSS initiates the session and the DLC; frame size
+  (N1) 255; credit-based flow control with 5-32 credits observed; about
+  250 / 450 / 570 frames per second at 4 / 2 / 1.25 ms send intervals with
+  newest-only send gating (`floss_hci_acl_can_send_fresh()`, section 4).
+  When the host assigns the server channel dynamically, look it up first
+  with `floss_sdp_query_rfcomm_channel()` ([SDP.md](SDP.md)).
+- **Server role**: not yet verified over the air.
+- **ctest**: `tests/test_rfcomm.c` runs the client path through the
+  simulator (L2CAP PSM 3, SABM/UA on DLCI 0, PN, SABM/UA on the DLC, MSC
+  both ways, data with credits both ways, DISC of the DLC and of the
+  session); `tests/test_l2cap.c` covers server-side edge cases.
 
 ## 1. Model
 
@@ -66,6 +79,7 @@ All calls from the stack context. Server channels are 1..30
 | `floss_rfcomm_disconnect(dlc)` | DISC; `on_close()` when confirmed. |
 | `floss_rfcomm_send(dlc, data, len)` | Copying send. Returns bytes accepted (may be short), `FLOSS_ERR_BUSY`, or another negative error. |
 | `floss_rfcomm_can_send_now(dlc)` | True if at least one frame would be accepted. |
+| `floss_hci_acl_can_send_fresh(dlc->handle, max_inflight)` | Newest-only gating for "latest state" streams: true only if a frame would reach the controller now (no queued ACL data on the link) and fewer than `max_inflight` x `floss_hci_completion_batch()` packets are still in the controller. Check it together with `floss_rfcomm_can_send_now()` and skip or coalesce a sample when false; the HID input path uses the same rule. |
 | `floss_rfcomm_buf_alloc()` + `floss_rfcomm_send_buf(dlc, buf)` | Zero-copy: write up to `dlc->mtu` bytes at `buf->data`; `send_buf` takes ownership in all cases. |
 | `floss_rfcomm_set_manual_credits()`, `floss_rfcomm_grant()` | See flow control. |
 | `floss_rfcomm_set_signals(dlc, v24)` | Send our V.24 signals (MSC): `FLOSS_RFCOMM_V24_RTC`, `_RTR`, `_IC`, `_DV`, `_FC`; default `FLOSS_RFCOMM_V24_DEFAULT`. |

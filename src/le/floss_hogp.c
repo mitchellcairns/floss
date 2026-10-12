@@ -224,16 +224,11 @@ static bool link_subscribed(uint8_t i, uint16_t handle) {
 
 /** Room for a report now, without queueing behind an older one? */
 static bool can_send(uint16_t handle) {
-    if (!floss_hci_acl_can_send_now(handle)) {
-        return false;
-    }
-    const floss_conn_t *c = floss_hci_conn_by_handle(handle);
     uint8_t max = s_hogp.cfg && s_hogp.cfg->max_inflight ? s_hogp.cfg->max_inflight : 1;
     /* Controllers that report completions in batches (floss_chipset_t
      * .completion_batch) would otherwise leave the link idle: the CYW43439
-     * holds back a lone completion for ~250 ms. */
-    uint16_t cap = (uint16_t)(max * floss_hci_completion_batch());
-    return c == NULL || c->inflight < cap;
+     * holds back a lone completion for ~250 ms. The helper scales for that. */
+    return floss_hci_acl_can_send_fresh(handle, max);
 }
 
 static floss_err_t send_report(uint8_t i, uint16_t handle, hogp_report_t *r) {

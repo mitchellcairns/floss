@@ -34,7 +34,7 @@
  *   6. ACL from the stack: credits, reassembly, completions
  *   7. remote L2CAP peer: signaling, channels, inboxes
  *   8. ACL to the stack
- *   9. public helpers: links, channels, SDP client, LE
+ *   9. public helpers: links, channels, SDP client and scripted SDP server, LE
  *  10. transport ops and pump helpers
  *  11. LE central support: remote advertisers (scanning), scripted GATT server
  */
@@ -196,6 +196,17 @@ typedef struct {
     floss_sim_gatt_stats_t stats;
 } sim_gatt_t;
 
+/** The scripted SDP server on the remote side (section 9). */
+typedef struct {
+    bool active;
+    bool silent;
+    uint16_t error_code;
+    uint16_t chunk;
+    uint16_t len;
+    uint8_t data[FLOSS_SIM_SDP_MAX];
+    floss_sim_sdp_server_stats_t stats;
+} sim_sdps_t;
+
 static struct {
     floss_transport_t transport;
     floss_sim_config_t cfg;
@@ -246,6 +257,9 @@ static struct {
     floss_sim_le_scan_t le_scan;
     sim_adv_t advs[FLOSS_SIM_MAX_ADVERTISERS];
     sim_gatt_t gatt;
+
+    /* Scripted SDP server (section 9). */
+    sim_sdps_t sdps;
 } sim;
 
 /* LMP features page 0: 3/5-slot, encryption, slot offset, timing accuracy,
@@ -769,6 +783,7 @@ static bool sim_le_central_cmd(uint16_t op, const uint8_t *p, uint8_t n);
 static void sim_le_scan_tick(uint32_t now);
 static void sim_gatt_rx(sim_link_t *l, const uint8_t *p, uint16_t n);
 static void sim_gatt_on_remote_tx(uint16_t handle, const uint8_t *p, uint16_t n);
+static void sim_sdps_rx(sim_chan_t *c, const uint8_t *p, uint16_t n);
 
 /* ------------------------------------------------------------------------ */
 /* 4. Pairing                                                               */
@@ -2480,6 +2495,9 @@ static void l2cap_rx(sim_link_t *l, const uint8_t *pdu, uint16_t len) {
     if (l->pub.le && cid == FLOSS_SIM_CID_ATT) {
         sim_gatt_rx(l, pdu + 4, plen); /* scripted GATT server, if one serves this link */
     }
+    if (!l->pub.le && !c->fixed && !c->pub.sim_initiated && c->pub.psm == FLOSS_PSM_SDP) {
+        sim_sdps_rx(c, pdu + 4, plen); /* scripted SDP server, if serving */
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2824,6 +2842,165 @@ int floss_sim_sdp_ssa(uint16_t handle, uint16_t uuid16, uint8_t *out, uint16_t c
     }
     floss_sim_l2cap_disconnect(ch);
     return result;
+}
+
+/* ---- scripted SDP server --------------------------------------------- */
+
+static void sim_sdps_error(sim_chan_t *c, uint16_t tid, uint16_t code) {
+    uint8_t rsp[7] = {0x01};
+    floss_put_be16(rsp + 1, tid);
+    floss_put_be16(rsp + 3, 2);
+    floss_put_be16(rsp + 5, code);
+    sim.sdps.stats.errors_sent++;
+    (void)floss_sim_l2cap_send(&c->pub, rsp, sizeof rsp);
+}
+
+/** Parse the data element at *p and advance past it. Returns its payload, or NULL if malformed. */
+static const uint8_t *sim_sdps_elem(const uint8_t **p, const uint8_t *end, uint8_t *type, uint32_t *len) {
+    if (*p >= end) {
+        return NULL;
+    }
+    uint16_t h = floss_de_header(*p, (uint16_t)(end - *p), type, len);
+    if (h == 0) {
+        return NULL;
+    }
+    const uint8_t *payload = *p + h;
+    *p = payload + *len;
+    return payload;
+}
+
+/**
+ * A request from the stack's SDP client. Only ServiceSearchAttribute is
+ * served; its pattern (one UUID), byte limit, attribute range and
+ * continuation are checked and recorded.
+ */
+static void sim_sdps_rx(sim_chan_t *c, const uint8_t *p, uint16_t n) {
+    sim_sdps_t *s = &sim.sdps;
+    if (!s->active) {
+        return;
+    }
+    s->stats.requests++;
+    if (n < 5 || (uint32_t)floss_get_be16(p + 3) + 5 != n) {
+        s->stats.bad_requests++;
+        sim_sdps_error(c, n >= 3 ? floss_get_be16(p + 1) : 0, 0x0004); /* invalid PDU size */
+        return;
+    }
+    uint16_t tid = floss_get_be16(p + 1);
+    if (s->silent) {
+        return;
+    }
+    if (p[0] != 0x06) {
+        s->stats.bad_requests++;
+        sim_sdps_error(c, tid, 0x0003);
+        return;
+    }
+    const uint8_t *q = p + 5;
+    const uint8_t *end = p + n;
+    uint8_t t = 0;
+    uint32_t len = 0;
+    const uint8_t *pat = sim_sdps_elem(&q, end, &t, &len);
+    const uint8_t *pat_end = pat ? pat + len : NULL;
+    const uint8_t *uuid = NULL;
+    if (pat && t == 6) { /* sequence */
+        uuid = sim_sdps_elem(&pat, pat_end, &t, &len);
+    }
+    if (!uuid || t != 3 || pat != pat_end || end - q < 2) {
+        s->stats.bad_requests++;
+        sim_sdps_error(c, tid, 0x0003);
+        return;
+    }
+    memcpy(s->stats.last_uuid, uuid, len);
+    s->stats.last_uuid_len = (uint8_t)len;
+    uint16_t max = floss_get_be16(q);
+    q += 2;
+    s->stats.last_max_bytes = max;
+    const uint8_t *ids = sim_sdps_elem(&q, end, &t, &len);
+    const uint8_t *ids_end = ids ? ids + len : NULL;
+    const uint8_t *range = NULL;
+    if (ids && t == 6) {
+        range = sim_sdps_elem(&ids, ids_end, &t, &len);
+    }
+    if (!range || t != 1 || (len != 2 && len != 4) || q >= end || max < 7) {
+        s->stats.bad_requests++;
+        sim_sdps_error(c, tid, 0x0003);
+        return;
+    }
+    s->stats.last_range =
+        len == 4 ? floss_get_be32(range) : ((uint32_t)floss_get_be16(range) << 16 | floss_get_be16(range));
+    uint8_t cont_len = *q++;
+    s->stats.last_cont_len = cont_len;
+    if (cont_len > 16 || end - q != cont_len) {
+        s->stats.bad_requests++;
+        sim_sdps_error(c, tid, 0x0003);
+        return;
+    }
+    if (s->error_code) {
+        sim_sdps_error(c, tid, s->error_code);
+        return;
+    }
+    uint16_t off = 0;
+    if (cont_len) {
+        off = cont_len == 2 ? floss_get_be16(q) : 0xFFFF;
+        if (off == 0 || off >= s->len) {
+            s->stats.bad_requests++;
+            sim_sdps_error(c, tid, 0x0005); /* invalid continuation state */
+            return;
+        }
+    }
+    uint16_t room = c->pub.stack_mtu > 5 + 2 + 3 ? (uint16_t)(c->pub.stack_mtu - 5 - 2 - 3) : 1;
+    uint16_t chunk = FLOSS_MIN((uint16_t)(s->len - off), FLOSS_MIN(max, room));
+    if (s->chunk) {
+        chunk = FLOSS_MIN(chunk, s->chunk);
+    }
+    bool more = off + chunk < s->len;
+    uint8_t rsp[5 + 2 + FLOSS_SIM_SDP_MAX + 3];
+    uint16_t rn = 5;
+    rsp[0] = 0x07; /* ServiceSearchAttributeResponse */
+    floss_put_be16(rsp + 1, tid);
+    floss_put_be16(rsp + rn, chunk);
+    rn += 2;
+    memcpy(rsp + rn, s->data + off, chunk);
+    rn = (uint16_t)(rn + chunk);
+    if (more) {
+        rsp[rn++] = 2;
+        floss_put_be16(rsp + rn, (uint16_t)(off + chunk));
+        rn += 2;
+    } else {
+        rsp[rn++] = 0;
+    }
+    floss_put_be16(rsp + 3, (uint16_t)(rn - 5));
+    s->stats.responses++;
+    (void)floss_sim_l2cap_send(&c->pub, rsp, rn);
+}
+
+floss_err_t floss_sim_sdp_serve(const uint8_t *attr_lists, uint16_t len, uint16_t chunk) {
+    if ((len && !attr_lists) || len > FLOSS_SIM_SDP_MAX) {
+        return FLOSS_ERR_INVALID;
+    }
+    memset(&sim.sdps, 0, sizeof sim.sdps);
+    if (len) {
+        memcpy(sim.sdps.data, attr_lists, len);
+    }
+    sim.sdps.len = len;
+    sim.sdps.chunk = chunk;
+    sim.sdps.active = true;
+    return FLOSS_OK;
+}
+
+void floss_sim_sdp_serve_error(uint16_t error_code) {
+    sim.sdps.error_code = error_code;
+}
+
+void floss_sim_sdp_serve_silence(bool silent) {
+    sim.sdps.silent = silent;
+}
+
+void floss_sim_sdp_serve_stop(void) {
+    sim.sdps.active = false;
+}
+
+const floss_sim_sdp_server_stats_t *floss_sim_sdp_server_stats(void) {
+    return &sim.sdps.stats;
 }
 
 floss_err_t floss_sim_inject_event(uint8_t code, const uint8_t *params, uint8_t len) {

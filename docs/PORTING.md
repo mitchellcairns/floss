@@ -318,6 +318,9 @@ values (use `PUBLIC` in CMake).
 | `FLOSS_HID_MAX_INPUT_IDS` | 4 | Input report IDs tracked by the mailbox. |
 | `FLOSS_ENABLE_LE` | 1 | LE GAP, ATT/GATT, SMP, HID-over-GATT. |
 | `FLOSS_ENABLE_RFCOMM` | 1 | RFCOMM + serial port. |
+| `FLOSS_ENABLE_SDP_CLIENT` | 1 | SDP client queries (`floss_sdp_query_ssa()`, see [SDP.md](SDP.md)). |
+| `FLOSS_SDP_CLIENT_BUF` | 512 | Reassembled AttributeLists bytes per SDP query. |
+| `FLOSS_SDP_CLIENT_TIMEOUT_MS` | 10000 | SDP query fails after this long without progress. |
 | `FLOSS_RFCOMM_MAX_DLC` | 2 | RFCOMM data channels. |
 | `FLOSS_ATT_MTU` | 185 | ATT MTU offered on LE links. |
 | `FLOSS_LOG_LEVEL` | `FLOSS_LOG_INFO` (3) | Compile-time log ceiling: NONE 0, ERROR 1, WARN 2, INFO 3, DEBUG 4, TRACE 5. |

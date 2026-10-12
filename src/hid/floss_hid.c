@@ -558,19 +558,7 @@ static void hid_apply_protocol(uint8_t proto) {
  * queue turns directly into input latency.
  */
 static bool hid_link_ready(void) {
-    if (!floss_l2cap_can_send_now(hid.intr)) {
-        return false;
-    }
-    if (hid.max_inflight) {
-        /* Scale by the controller's completion batching: the cap is about
-         * packets truly queued in the radio, not packets not yet reported. */
-        uint16_t cap = (uint16_t)(hid.max_inflight * floss_hci_completion_batch());
-        const floss_conn_t *c = floss_hci_conn_by_handle(hid.handle);
-        if (c && c->inflight >= cap) {
-            return false;
-        }
-    }
-    return true;
+    return floss_l2cap_can_send_now(hid.intr) && floss_hci_acl_can_send_fresh(hid.handle, hid.max_inflight);
 }
 
 static void hid_note_deferred(void) {

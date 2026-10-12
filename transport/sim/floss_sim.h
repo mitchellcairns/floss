@@ -14,7 +14,7 @@
  *     |  stack    |  HCI cmd/evt/ACL    | controller (HCI) |         | peer   |
  *     +-----------+                     +------------------+         +--------+
  *                                         answers commands,          L2CAP peer,
- *                                         pairing (LMP), credits     SDP client
+ *                                         pairing (LMP), credits     SDP client/server
  *
  *  - The virtual controller answers every HCI command the way a real one
  *    does (Command Complete / Command Status, Num_HCI_Command_Packets = 1),
@@ -566,6 +566,51 @@ const floss_sim_gatt_stats_t *floss_sim_gatt_stats(void);
  * sequences) to out. Returns the length, or a negative floss_err_t.
  */
 int floss_sim_sdp_ssa(uint16_t handle, uint16_t uuid16, uint8_t *out, uint16_t cap);
+
+/* ------------------------------------------------------------------------ */
+/* SDP server on the remote side (drives the stack's SDP client)            */
+/* ------------------------------------------------------------------------ */
+/*
+ * While serving, every channel the STACK opens to PSM 0x0001 is answered by
+ * a scripted server. ServiceSearchAttributeRequests get the canned
+ * AttributeLists bytes whatever their pattern and attribute range (the test
+ * decides what the "matching" answer is; an empty sequence 35 00 means no
+ * record matched), split into chunks of at most
+ * min(request's MaximumAttributeByteCount, chunk, what fits the stack's MTU)
+ * with a 2-byte continuation token (the offset). The request is parsed and
+ * recorded in the stats; requests also still land in the channel inbox.
+ */
+
+#ifndef FLOSS_SIM_SDP_MAX
+#define FLOSS_SIM_SDP_MAX 1024
+#endif
+
+typedef struct {
+    uint32_t requests;          /**< requests received (also while silent) */
+    uint32_t responses;         /**< ServiceSearchAttributeResponses sent */
+    uint32_t errors_sent;       /**< Error Responses sent */
+    uint32_t bad_requests;      /**< malformed / unexpected requests or continuation (expect 0) */
+    uint16_t last_max_bytes;    /**< MaximumAttributeByteCount of the last request */
+    uint32_t last_range;        /**< attribute range of the last request (lo << 16 | hi) */
+    uint8_t last_uuid[16];      /**< pattern UUID of the last request, wire bytes */
+    uint8_t last_uuid_len;
+    uint8_t last_cont_len;      /**< continuation bytes the last request carried */
+} floss_sim_sdp_server_stats_t;
+
+/**
+ * Serve `attr_lists` (copied, up to FLOSS_SIM_SDP_MAX bytes) as the answer
+ * to every request. chunk > 0 caps the AttributeLists bytes per response
+ * (small values force continuation); 0 = only the request's limit and MTU.
+ * Resets the error / silence settings and the stats.
+ */
+floss_err_t floss_sim_sdp_serve(const uint8_t *attr_lists, uint16_t len, uint16_t chunk);
+/** Answer every request with an Error Response carrying this code (0 = answer normally). */
+void floss_sim_sdp_serve_error(uint16_t error_code);
+/** Record requests but never answer (client timeout tests). */
+void floss_sim_sdp_serve_silence(bool silent);
+/** Stop serving (requests are then only stored in the inbox). */
+void floss_sim_sdp_serve_stop(void);
+const floss_sim_sdp_server_stats_t *floss_sim_sdp_server_stats(void);
 
 /* ------------------------------------------------------------------------ */
 /* Classic discovery: remote devices answering inquiries                    */

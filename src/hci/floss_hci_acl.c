@@ -261,6 +261,19 @@ bool floss_hci_acl_can_send_now(uint16_t handle) {
     return c && c->state == FLOSS_CONN_OPEN && c->txq.count == 0 && *pool_credits(c) > 0 && link_mtu(c) > 0;
 }
 
+bool floss_hci_acl_can_send_fresh(uint16_t handle, uint8_t max_inflight) {
+    if (!floss_hci_acl_can_send_now(handle)) {
+        return false;
+    }
+    if (max_inflight == 0) {
+        return true;
+    }
+    /* Scaled by the controller's completion batching: the cap is about packets
+     * truly queued in the radio, not packets whose completion is not reported yet. */
+    const floss_conn_t *c = floss_hci_conn_by_handle(handle);
+    return c->inflight < (uint16_t)(max_inflight * floss_hci_completion_batch());
+}
+
 void floss_hci_acl_notify_credits(void) {
     floss_l2cap_on_credits();
 #if FLOSS_ENABLE_LE
