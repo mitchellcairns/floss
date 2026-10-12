@@ -106,12 +106,13 @@ static void bp_window(cyw43_int_t *bus, uint32_t addr) {
     if (win == cur) {
         return;
     }
-    for (int i = 2; i >= 0; i--) { /* HIGH, MID, LOW, as the driver does */
-        uint32_t shift = 8u * (uint32_t)(i + 1);
-        uint32_t b = (win >> shift) & 0xFFu;
-        if (b != ((cur >> shift) & 0xFFu)) {
-            cyw43_write_reg_u8(bus, BACKPLANE_FUNCTION, BP_WINDOW_REG_LOW + (uint32_t)i, b);
-        }
+    if (((win ^ cur) & 0xFFFF0000u) == 0) {
+        /* Only the low byte differs: one byte write. */
+        cyw43_write_reg_u8(bus, BACKPLANE_FUNCTION, BP_WINDOW_REG_LOW, (win >> 8) & 0xFFu);
+    } else {
+        /* LOW, MID and HIGH are consecutive registers: set all three in one transfer. */
+        const uint8_t w[4] = {(uint8_t)(win >> 8), (uint8_t)(win >> 16), (uint8_t)(win >> 24), 0};
+        cyw43_write_bytes(bus, BACKPLANE_FUNCTION, BP_WINDOW_REG_LOW, 3, w);
     }
     bus->cur_backplane_window = win;
 }
