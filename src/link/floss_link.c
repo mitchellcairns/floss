@@ -172,6 +172,13 @@ static struct {
     bool hello_pending;
     bool pong_pending;
     uint32_t pong_t_dongle;
+    bool acks;                /**< the dongle acknowledges INPUTs (its HELLO said so) */
+    uint16_t acked_next;      /**< seq after the newest INPUT the dongle acknowledged */
+    uint32_t ack_last_us;     /**< when an ACK last arrived (or the session started) */
+
+    /* dongle: ACK of the newest INPUT, waiting for room */
+    bool ack_pending;
+    uint16_t ack_seq;
 
     /* dongle receive */
     bool rx_have_seq;
@@ -241,6 +248,16 @@ bool floss_link_inflight_ok(uint16_t handle) {
     uint8_t m = L.cfg->max_inflight;
     if (m == 0) {
         return true;
+    }
+    if (L.pad && L.acks) {
+        /* The dongle tells us what arrived, within a slot pair or two. */
+        if ((uint16_t)(L.tx_seq - L.acked_next) < m) {
+            return true;
+        }
+        if ((uint32_t)(floss_hal_time_us() - L.ack_last_us) < FLOSS_LINK_ACK_TIMEOUT_US) {
+            return false;
+        }
+        /* ACKs stopped: count by the controller's completion events below. */
     }
     /* Scaled by the controller's completion batching: the cap is about packets
      * truly queued in the radio, not packets whose completion is not reported yet. */
@@ -655,6 +672,9 @@ static void send_hello(void) {
     if (L.pad && L.cfg->transport == FLOSS_LINK_CLASSIC && L.cfg->classic_idle_ms > 0) {
         flags |= FLOSS_LINK_HELLO_F_IDLE_SNIFF;
     }
+    if (!L.pad && L.cfg->input_acks) {
+        flags |= FLOSS_LINK_HELLO_F_ACKS;
+    }
     uint8_t p[FLOSS_LINK_HELLO_LEN] = {FLOSS_LINK_PDU_HELLO, FLOSS_LINK_VERSION, (uint8_t)L.cfg->role,
                                        (uint8_t)FLOSS_LINK_MAX_REPORT, flags};
     floss_err_t err = L.tp->send_ctrl(p, sizeof(p));
@@ -671,6 +691,14 @@ static void send_pong(void) {
     floss_put_le32(&p[5], floss_hal_time_us());
     floss_err_t err = L.tp->send_ctrl(p, sizeof(p));
     L.pong_pending = err == FLOSS_ERR_BUSY;
+}
+
+/** Dongle: acknowledge the newest INPUT (a later ACK covers this one if there is no room). */
+static void send_ack(void) {
+    uint8_t p[FLOSS_LINK_ACK_LEN];
+    p[0] = FLOSS_LINK_PDU_ACK;
+    floss_put_le16(&p[1], L.ack_seq);
+    L.ack_pending = L.tp->send_ctrl(p, sizeof(p)) == FLOSS_ERR_BUSY;
 }
 
 static void ping_fired(floss_timer_t *t, void *arg) {
@@ -780,6 +808,11 @@ static void rx_input(const uint8_t *pdu, uint16_t len) {
     L.rx_last_us = now;
     floss_hist_add(&L.stats.rx_jitter, jitter_sample(now - info.t_pad_us, now));
 
+    if (L.cfg->input_acks) {
+        L.ack_seq = info.seq;
+        send_ack();
+    }
+
     if (L.cb->on_input) {
         L.cb->on_input(pdu[7], &pdu[FLOSS_LINK_INPUT_HDR], dlen, &info);
     }
@@ -803,6 +836,26 @@ static void rx_output(const uint8_t *pdu, uint16_t len) {
     }
 }
 
+/** Pad: the dongle has every INPUT up to seq. A report held back for room goes now, with the newest input. */
+static void rx_ack(const uint8_t *pdu, uint16_t len) {
+    if (len != FLOSS_LINK_ACK_LEN) {
+        rx_bad(pdu, len, "ACK length");
+        return;
+    }
+    uint16_t next = (uint16_t)(floss_get_le16(&pdu[1]) + 1u);
+    /* Only forward, and never past what was sent */
+    if ((uint16_t)(next - L.acked_next) > (uint16_t)(L.tx_seq - L.acked_next)) {
+        return;
+    }
+    L.acked_next = next;
+    L.ack_last_us = floss_hal_time_us();
+    if (L.due_mask && L.cb->on_report_tick) {
+        L.cb->on_report_tick();
+        L.due_mask |= changed_mask();
+    }
+    link_input_service();
+}
+
 static void rx_hello(const uint8_t *pdu, uint16_t len) {
     if (len < FLOSS_LINK_HELLO_LEN) {
         rx_bad(pdu, len, "short HELLO");
@@ -811,6 +864,11 @@ static void rx_hello(const uint8_t *pdu, uint16_t len) {
     L.peer_hello = true;
     L.peer_version = pdu[1];
     L.peer_flags = pdu[4];
+    if (L.pad && (pdu[4] & FLOSS_LINK_HELLO_F_ACKS) && !L.acks) {
+        L.acks = true;
+        L.acked_next = L.tx_seq; /* earlier INPUTs are never acknowledged */
+        L.ack_last_us = floss_hal_time_us();
+    }
     if (pdu[1] != FLOSS_LINK_VERSION) {
         FLOSS_LOGW(LINK, "peer speaks link protocol v%u, we speak v%u", pdu[1], FLOSS_LINK_VERSION);
     }
@@ -878,6 +936,12 @@ void floss_link_rx_pdu(const uint8_t *pdu, uint16_t len) {
     case FLOSS_LINK_PDU_HELLO:
         rx_hello(pdu, len);
         return;
+    case FLOSS_LINK_PDU_ACK:
+        if (L.pad) {
+            rx_ack(pdu, len);
+            return;
+        }
+        break;
     default:
         rx_bad(pdu, len, "unknown type");
         return;
@@ -898,6 +962,8 @@ void floss_link_session_up(const floss_addr_t *peer) {
     L.jit_have_prev = false;
     L.peer_hello = false;
     L.pong_pending = false;
+    L.acks = false;
+    L.ack_pending = false;
     floss_link_set_state(FLOSS_LINK_STATE_CONNECTED);
 
     if (L.pad) {
@@ -957,6 +1023,9 @@ static void link_poll(void) {
         if (L.pong_pending) {
             send_pong();
         }
+        if (L.ack_pending) {
+            send_ack();
+        }
         if (L.pad) {
             link_input_service();
         }
@@ -1002,7 +1071,8 @@ void floss_link_config_defaults(floss_link_config_t *cfg, floss_link_role_t role
          * connection event (HOGP measurement in the same document). */
         cfg->report_interval_us = transport == FLOSS_LINK_LE ? FLOSS_LINK_INTERVAL_CONN : 1000u;
     }
-    cfg->max_inflight = 2;            /* x completion_batch: findings 1, 2 */
+    cfg->max_inflight = 2;            /* x completion_batch without ACKs: findings 1, 2 */
+    cfg->input_acks = true;
     cfg->classic_poll_us = 1250;      /* one poll per slot pair: 800 Hz */
     cfg->classic_idle_ms = 0;
     cfg->classic_idle_sniff_slots = 16; /* 10 ms */

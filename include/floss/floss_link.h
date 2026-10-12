@@ -38,6 +38,7 @@
  *   0x03 PING    [t_dongle_us u32]            (dongle -> pad)
  *   0x04 PONG    [t_dongle_us u32][t_pad_us u32] (pad -> dongle, echo)
  *   0x05 HELLO   [version u8][role u8][max_report u8][flags u8]
+ *   0x06 ACK     [seq u16]   (dongle -> pad: newest INPUT received)
  * INPUT for a 13-byte report is 22 bytes + 4 L2CAP: one single-slot packet.
  */
 #ifndef FLOSS_LINK_H
@@ -67,6 +68,7 @@ extern "C" {
 #define FLOSS_LINK_PDU_PING   0x03
 #define FLOSS_LINK_PDU_PONG   0x04
 #define FLOSS_LINK_PDU_HELLO  0x05
+#define FLOSS_LINK_PDU_ACK    0x06
 
 /**
  * 128-bit UUIDs of the LE link service and its characteristics (big-endian
@@ -115,8 +117,25 @@ typedef struct {
     /* --- pad sending --------------------------------------------------- */
     /** 0 = send on change as fast as the link allows; >0 = paced period (us). LE: FLOSS_LINK_INTERVAL_CONN = one per connection event. */
     uint32_t report_interval_us;
-    /** Max un-acknowledged packets (x chipset completion_batch). Default 2. */
+    /**
+     * Pad: max INPUTs handed to the radio and not yet known delivered. A
+     * report in the radio can no longer be replaced by newer input, so this
+     * bounds how stale a report can be when it leaves. Delivered = the
+     * dongle's ACK when it sends them (input_acks), else the controller's
+     * completion events (then x the chipset's completion_batch). Default 2.
+     */
     uint8_t max_inflight;
+
+    /**
+     * Dongle: acknowledge every INPUT (ACK PDU, in the radio slot that
+     * answers the pad's packet anyway), and say so in HELLO. A pad that sees
+     * it counts its reports in flight by these instead of the controller's
+     * completion events, which some controllers report late and in pairs
+     * (CYW43439: 3-8 ms, docs/PERFORMANCE.md finding 2): at one report per
+     * slot pair that held reports back and sent them two at a time, the
+     * second a slot pair older. Default true.
+     */
+    bool input_acks;
 
     /* --- Classic -------------------------------------------------------- */
     /**

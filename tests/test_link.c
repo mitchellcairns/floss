@@ -620,8 +620,9 @@ TEST(classic_dongle_flow) {
     ASSERT_EQ(recv_pdu(g_dch, pdu, sizeof pdu), 5);
     ASSERT_EQ(pdu[0], FLOSS_LINK_PDU_HELLO);
     ASSERT_EQ(pdu[2], FLOSS_LINK_ROLE_DONGLE);
+    ASSERT_EQ(pdu[4] & FLOSS_LINK_HELLO_F_ACKS, FLOSS_LINK_HELLO_F_ACKS);
 
-    /* INPUT PDUs from the pad: seq, loss, data. */
+    /* INPUT PDUs from the pad: seq, loss, data; each acknowledged. */
     const uint8_t r[6] = {1, 2, 3, 4, 5, 6};
     uint16_t seqs[] = {100, 101, 103, 104, 110};
     uint16_t lost[] = {0, 0, 1, 0, 5};
@@ -633,6 +634,9 @@ TEST(classic_dongle_flow) {
         ASSERT_EQ(g_cb.in_info.seq, seqs[i]);
         ASSERT_EQ(g_cb.in_info.lost, lost[i]);
         ASSERT_EQ(g_cb.in_info.t_pad_us, 1000u * i);
+        ASSERT_EQ(recv_pdu(g_dch, pdu, sizeof pdu), 3);
+        ASSERT_EQ(pdu[0], FLOSS_LINK_PDU_ACK);
+        ASSERT_EQ(floss_get_le16(&pdu[1]), seqs[i]);
     }
     ASSERT_EQ(g_cb.in_id, 3);
     ASSERT_EQ(g_cb.in_len, 6);
@@ -1298,6 +1302,98 @@ TEST(classic_pad_shift_phase) {
     ASSERT_TICK_GAP(t + 1, 2000u);
 }
 
+static uint8_t g_tick_value;
+
+static void cb_tick_publish(void) {
+    cb_tick();
+    uint8_t r[1] = {g_tick_value};
+    floss_link_set_input(1, r, 1);
+}
+
+static const floss_link_callbacks_t k_cb_publish = {
+    .on_connected = cb_connected,
+    .on_disconnected = cb_disconnected,
+    .on_report_tick = cb_tick_publish,
+};
+
+/** Read every INPUT the stack sent so far; returns how many, the last one's seq and value. */
+static unsigned drain_inputs(floss_sim_chan_t *ch, uint16_t *seq, uint8_t *value) {
+    uint8_t pdu[64];
+    unsigned n = 0;
+    int len;
+    while ((len = floss_sim_l2cap_recv(ch, pdu, sizeof pdu)) > 0) {
+        if (pdu[0] == FLOSS_LINK_PDU_INPUT) {
+            *seq = floss_get_le16(&pdu[1]);
+            *value = pdu[9];
+            n++;
+        }
+    }
+    return n;
+}
+
+static void send_ack_pdu(floss_sim_chan_t *ch, uint16_t seq) {
+    uint8_t ack[3] = {FLOSS_LINK_PDU_ACK, 0, 0};
+    floss_put_le16(&ack[1], seq);
+    ASSERT_EQ(floss_sim_l2cap_send(ch, ack, sizeof ack), FLOSS_OK);
+}
+
+TEST(classic_pad_counts_by_acks) {
+    memset(&g_gap, 0, sizeof g_gap);
+    memset(&g_cb, 0, sizeof g_cb);
+    g_transport = floss_tc_sim_init(NULL);
+    ASSERT_EQ(floss_init(&(floss_init_t){.transport = g_transport}), FLOSS_OK);
+    ASSERT_EQ(floss_gap_add_listener(gap_rec, NULL), FLOSS_OK);
+    floss_link_config_defaults(&g_cfg, FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC);
+    g_cfg.report_interval_us = 1250;
+    ASSERT_EQ(floss_link_init(&g_cfg, &k_cb_publish), FLOSS_OK);
+    ASSERT_EQ(floss_start(), FLOSS_OK);
+    ASSERT_TRUE(floss_sim_pump_until(cond_ready, NULL, 5000));
+    floss_sim_chan_t *ch;
+    dongle_connects(&k_peer, &ch);
+    ASSERT_TRUE(floss_sim_pump_until(cond_connected, NULL, 100));
+
+    /* The controller reports delivered packets 6 ms late (as the CYW43439 does, finding 2):
+     * counted by those, max_inflight reports would leave every 6 ms */
+    floss_sim_cfg()->nocp_delay_us = 6000u;
+    const uint8_t hello[] = {FLOSS_LINK_PDU_HELLO, FLOSS_LINK_VERSION, FLOSS_LINK_ROLE_DONGLE,
+                             FLOSS_LINK_MAX_REPORT, FLOSS_LINK_HELLO_F_ACKS};
+    ASSERT_EQ(floss_sim_l2cap_send(ch, hello, sizeof hello), FLOSS_OK);
+    floss_sim_pump(5);
+    uint16_t seq = 0;
+    uint8_t value = 0;
+    drain_inputs(ch, &seq, &value);
+
+    /* Acknowledged as they arrive: one per period, far past the completion-based cap */
+    unsigned sent = 0;
+    for (unsigned i = 0; i < 40; i++) {
+        floss_sim_pump_us(1250);
+        if (drain_inputs(ch, &seq, &value)) {
+            sent++;
+            send_ack_pdu(ch, seq);
+        }
+    }
+    ASSERT_GE(sent, 38u);
+
+    /* No more ACKs: max_inflight (2) reports go, then nothing */
+    floss_sim_pump_us(10000);
+    ASSERT_EQ(drain_inputs(ch, &seq, &value), 2u);
+    floss_sim_pump_us(5000);
+    ASSERT_EQ(drain_inputs(ch, &seq, &value), 0u);
+
+    /* An ACK frees room: the held report goes at once, with the input of that moment */
+    g_tick_value = 0x5A;
+    send_ack_pdu(ch, seq);
+    floss_sim_pump(3);
+    ASSERT_EQ(drain_inputs(ch, &seq, &value), 1u);
+    ASSERT_EQ(value, 0x5A);
+
+    /* ACKs gone for good: after the timeout the completion events count again */
+    floss_sim_cfg()->nocp_delay_us = 0;
+    floss_sim_pump_us(FLOSS_LINK_ACK_TIMEOUT_US + 10000u);
+    floss_sim_pump_us(10000);
+    ASSERT_GE(drain_inputs(ch, &seq, &value), 6u);
+}
+
 TEST(reinit_forgets_link) {
     start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_connects_no_keys);
     add_sim_dev(&k_peer, "FLOSS Dongle", -60, true);
@@ -1331,6 +1427,7 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_no_keys_pad_takes_remembered_at_once),
     TEST_CASE(reinit_forgets_link),
     TEST_CASE(classic_pad_shift_phase),
+    TEST_CASE(classic_pad_counts_by_acks),
 #if FLOSS_ENABLE_LE
     TEST_CASE(le_pad_flow),
     TEST_CASE(le_pad_drops_unsecured_central),
