@@ -208,10 +208,16 @@ typedef struct {
     bool auto_restart;
     /** Keep advertising while a link is open, for a second central (default false). */
     bool while_connected;
+    /**
+     * Non-connectable, non-scannable (ADV_NONCONN_IND) instead of ADV_IND: a
+     * beacon, e.g. a Classic device announcing itself over LE. Before Bluetooth
+     * 5.0 its interval must be at least 100 ms (0xA0). Default false.
+     */
+    bool non_connectable;
 } floss_le_adv_params_t;
 
 void floss_le_adv_params_defaults(floss_le_adv_params_t *p);
-/** Connectable undirected advertising (ADV_IND) with these parameters. */
+/** Undirected advertising (ADV_IND, or ADV_NONCONN_IND if non_connectable) with these parameters. */
 floss_err_t floss_le_adv_set_params(const floss_le_adv_params_t *p);
 /** Raw advertising data (<= 31 bytes, e.g. floss_le_ad_t.data). */
 floss_err_t floss_le_adv_set_data(const uint8_t *data, uint8_t len);

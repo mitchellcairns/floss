@@ -423,7 +423,8 @@ static void adv_reconfigure(void) {
     uint8_t p[15] = {0};
     floss_put_le16(&p[0], s_le.adv.interval_min);
     floss_put_le16(&p[2], s_le.adv.interval_max);
-    p[4] = 0x00; /* ADV_IND: connectable, scannable, undirected */
+    p[4] = s_le.adv.non_connectable ? 0x03  /* ADV_NONCONN_IND: a beacon */
+                                    : 0x00; /* ADV_IND: connectable, scannable, undirected */
     p[5] = s_le.adv.own_addr_type;
     /* p[6..12]: peer address type/address, unused for undirected */
     p[13] = s_le.adv.channel_map ? s_le.adv.channel_map : 0x07;
