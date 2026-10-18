@@ -155,6 +155,7 @@ static struct {
     floss_link_state_t state;
     bool ready;               /**< controller up */
     bool pair_request;        /**< floss_link_pair() before the controller was ready */
+    bool hold;                /**< floss_link_hold(): no pages or searches */
     bool session;             /**< data path up (CONNECTED) */
     floss_addr_t session_peer;
     bool have_peer;
@@ -1114,6 +1115,25 @@ floss_err_t floss_link_pair(void) {
         floss_timer_start(&L.pair_timer, FLOSS_LINK_PAIR_TIMEOUT_US); /* re-open the window */
     }
     return L.tp->pair();
+}
+
+floss_err_t floss_link_hold(bool hold) {
+    if (!L.cfg) {
+        return FLOSS_ERR_STATE;
+    }
+    if (L.hold == hold) {
+        return FLOSS_OK;
+    }
+    L.hold = hold;
+    FLOSS_LOGI(LINK, "%s", hold ? "holding off" : "carrying on");
+    if (L.ready && L.tp->hold) {
+        L.tp->hold(hold);
+    }
+    return FLOSS_OK;
+}
+
+bool floss_link_held(void) {
+    return L.hold;
 }
 
 floss_err_t floss_link_forget(void) {

@@ -277,6 +277,9 @@ static bool conn_match(const floss_gap_evt_t *evt) {
 }
 
 static void conn_retry_later(void) {
+    if (floss_link_held()) {
+        return; /* releasing the hold starts over */
+    }
     floss_timer_start(&C.retry_timer, floss_link_backoff_us(C.attempts));
     if (C.attempts < 16) {
         C.attempts++;
@@ -284,6 +287,9 @@ static void conn_retry_later(void) {
 }
 
 static void conn_page(const floss_addr_t *addr) {
+    if (floss_link_held()) {
+        return;
+    }
     C.target = *addr;
     floss_err_t err = floss_gap_connect(addr);
     if (err == FLOSS_OK) {
@@ -301,8 +307,8 @@ static void conn_page(const floss_addr_t *addr) {
 static void conn_search(void) {
     floss_link_set_state(FLOSS_LINK_STATE_PAIRING);
     C.have_candidate = false;
-    if (floss_gap_inquiry_active() || C.paging || C.handle != CL_NO_HANDLE) {
-        return; /* INQUIRY_COMPLETE / the link's end brings us back */
+    if (floss_link_held() || floss_gap_inquiry_active() || C.paging || C.handle != CL_NO_HANDLE) {
+        return; /* INQUIRY_COMPLETE / the link's end / the release brings us back */
     }
     floss_err_t err = floss_gap_inquiry_start(FLOSS_LINK_INQUIRY_LENGTH, 0);
     if (err != FLOSS_OK) {
@@ -839,6 +845,38 @@ static floss_buf_t *cl_input_alloc(uint8_t **pdu, uint16_t *cap) {
     return b;
 }
 
+/** floss_link_hold(): stop paging and searching (a link already up stays), or carry on. */
+static void cl_hold(bool hold) {
+    if (is_waiting()) {
+        if (hold) {
+            floss_gap_set_scan(false, false);
+        } else if (C.handle == CL_NO_HANDLE) {
+            wait_rest();
+        }
+        return;
+    }
+    if (hold) {
+        floss_timer_stop(&C.retry_timer);
+        C.have_candidate = false;
+        if (floss_gap_inquiry_active()) {
+            floss_gap_inquiry_cancel();
+        }
+        if (C.paging) {
+            floss_gap_connect_cancel(&C.target); /* CONNECT_FAILED is ignored once paging is false */
+            C.paging = false;
+        }
+        return;
+    }
+    if (C.handle == CL_NO_HANDLE) {
+        C.attempts = 0;
+        if (floss_link_state() == FLOSS_LINK_STATE_PAIRING) {
+            conn_search();
+        } else {
+            conn_rest();
+        }
+    }
+}
+
 static floss_err_t cl_input_send(floss_buf_t *b, uint16_t len) {
     b->len = len;
     return floss_l2cap_send_buf(C.chan, b, FLOSS_BUF_F_FLUSHABLE | FLOSS_BUF_F_PRIORITY);
@@ -871,6 +909,7 @@ const floss_link_tp_t floss_link_classic = {
     .on_input_change = pad_on_input_change,
     .on_peer_hello = cl_on_peer_hello,
     .poll = NULL,
+    .hold = cl_hold,
 };
 
 #endif /* FLOSS_ENABLE_LINK */

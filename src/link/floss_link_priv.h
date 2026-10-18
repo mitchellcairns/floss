@@ -179,6 +179,8 @@ typedef struct {
     void (*on_peer_hello)(uint8_t flags);
     /** Every floss_link_poll(), after the input path. Keep it to a few loads. */
     void (*poll)(void);
+    /** floss_link_hold() changed (the controller is up). */
+    void (*hold)(bool hold);
 } floss_link_tp_t;
 
 extern const floss_link_tp_t floss_link_classic;
@@ -196,6 +198,8 @@ static inline bool floss_link_is_pad(const floss_link_config_t *cfg) {
 void floss_link_set_state(floss_link_state_t st);
 /** What to do while not connected: PAIRING without a peer, else CONNECTING (auto_reconnect) or IDLE. */
 floss_link_state_t floss_link_rest_state(void);
+/** floss_link_hold() is on: start no page or search. */
+bool floss_link_held(void);
 
 /** The data path is up (channel open / subscribed): state CONNECTED, HELLO, pacing, on_connected. */
 void floss_link_session_up(const floss_addr_t *peer);
