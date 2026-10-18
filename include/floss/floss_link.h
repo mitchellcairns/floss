@@ -139,6 +139,14 @@ typedef struct {
      * does not answer. Turns off bonding in GAP's security settings.
      */
     bool classic_store_keys;
+    /**
+     * Without stored keys, connecting side: store the address of the peer it
+     * connects to, to page it first next time. Default true. false: that
+     * address is kept for the session only and the stored one stays as it
+     * was, for an application that decides itself when a new peer becomes
+     * the one to call (floss_link_remember_peer(), say when the user pairs).
+     */
+    bool classic_remember_peer;
     /** Connecting side: poll latency requested with QoS setup after connecting (us). Default 1250. */
     uint32_t classic_poll_us;
     /**
@@ -260,6 +268,14 @@ bool floss_link_stored_peer(floss_link_transport_t transport, floss_addr_t *addr
  * no keys are stored.
  */
 floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const floss_addr_t *addr);
+
+/**
+ * Connecting side: page this peer first, for this session only (nothing is
+ * stored). Call after floss_link_init(), before floss_start(): an
+ * application that heard a free peer announce itself (an LE beacon) and
+ * wants it without making it the remembered one.
+ */
+floss_err_t floss_link_call_first(const floss_addr_t *addr);
 
 /**
  * Hold off connecting: no pages, inquiry or scans until released (a page or

@@ -325,6 +325,21 @@ void floss_link_peer_set(uint8_t addr_type, const floss_addr_t *addr) {
     }
 }
 
+void floss_link_peer_use(const floss_addr_t *addr) {
+    L.peer.transport = (uint8_t)L.cfg->transport;
+    L.peer.addr_type = 0;
+    L.peer.addr = *addr;
+    L.have_peer = true;
+}
+
+floss_err_t floss_link_call_first(const floss_addr_t *addr) {
+    if (!L.cfg || !addr || floss_addr_is_zero(addr)) {
+        return FLOSS_ERR_INVALID;
+    }
+    floss_link_peer_use(addr);
+    return FLOSS_OK;
+}
+
 floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const floss_addr_t *addr) {
     if (!addr || floss_addr_is_zero(addr)) {
         return FLOSS_ERR_INVALID;
@@ -1054,6 +1069,7 @@ void floss_link_config_defaults(floss_link_config_t *cfg, floss_link_role_t role
     cfg->ping_period_ms = 0;
     cfg->auto_reconnect = true;
     cfg->classic_store_keys = true;
+    cfg->classic_remember_peer = true;
 }
 
 static floss_err_t validate(const floss_link_config_t *cfg) {

@@ -144,7 +144,12 @@ static void drop_link(void) {
 static bool accept_peer(const floss_addr_t *addr) {
     if (!store_keys()) {
         if (!is_waiting()) {
-            floss_link_peer_set(0, addr); /* whom to try first next time */
+            /* whom to try first next time, or for this session only */
+            if (cfg()->classic_remember_peer) {
+                floss_link_peer_set(0, addr);
+            } else {
+                floss_link_peer_use(addr);
+            }
         }
         return true;
     }

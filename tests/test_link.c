@@ -111,6 +111,11 @@ static bool cond_ready(void *arg) {
 }
 
 /** floss_init + link init (tweak may adjust the config) + start, until READY. */
+/** Set before start_link: the pad calls this peer first (floss_link_call_first), then cleared. */
+static const floss_addr_t *g_call_first = NULL;
+/** Set before start_link: runs before the stack starts (remote devices about from the start), then cleared. */
+static void (*g_before_start)(void) = NULL;
+
 static void start_link(floss_link_role_t role, floss_link_transport_t tp, void (*tweak)(floss_link_config_t *)) {
     memset(&g_gap, 0, sizeof g_gap);
     memset(&g_cb, 0, sizeof g_cb);
@@ -122,6 +127,14 @@ static void start_link(floss_link_role_t role, floss_link_transport_t tp, void (
         tweak(&g_cfg);
     }
     ASSERT_EQ(floss_link_init(&g_cfg, &k_cb), FLOSS_OK);
+    if (g_call_first) {
+        ASSERT_EQ(floss_link_call_first(g_call_first), FLOSS_OK);
+        g_call_first = NULL;
+    }
+    if (g_before_start) {
+        g_before_start();
+        g_before_start = NULL;
+    }
     ASSERT_EQ(floss_start(), FLOSS_OK);
     ASSERT_TRUE(floss_sim_pump_until(cond_ready, NULL, 5000));
     floss_sim_pump(20);
@@ -214,6 +227,7 @@ TEST(config_defaults) {
     ASSERT_TRUE(c.auto_reconnect);
     ASSERT_FALSE(c.classic_pad_connects);
     ASSERT_TRUE(c.classic_store_keys);
+    ASSERT_TRUE(c.classic_remember_peer);
     ASSERT_NULL(c.peer_name);
     ASSERT_NOT_NULL(c.name);
     floss_link_config_defaults(&c, FLOSS_LINK_ROLE_PAD, FLOSS_LINK_LE);
@@ -1260,6 +1274,44 @@ TEST(classic_no_keys_pad_takes_remembered_at_once) {
     floss_tc_assert_sim_clean();
 }
 
+static void tweak_pad_session_only(floss_link_config_t *c) {
+    tweak_pad_connects_no_keys(c);
+    c->classic_remember_peer = false;
+}
+
+TEST(classic_no_keys_pad_session_only) {
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_session_only);
+    /* The application remembers its own dongle, which isn't about; another one answers the
+     * search and is used, while the remembered one stays stored. */
+    ASSERT_EQ(floss_link_remember_peer(FLOSS_LINK_CLASSIC, &k_peer), FLOSS_OK);
+    add_sim_dev(&k_third, "FLOSS Dongle", -45, true);
+    wait_session_to(&k_third);
+    floss_addr_t stored;
+    ASSERT_TRUE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, &stored));
+    ASSERT_TRUE(floss_addr_eq(&stored, &k_peer));
+    floss_link_peer_t p;
+    ASSERT_TRUE(floss_link_peer_get(&p)); /* this session's */
+    ASSERT_TRUE(floss_addr_eq(&p.addr, &k_third));
+    floss_tc_assert_sim_clean();
+}
+
+static void two_dongles_about(void) {
+    add_sim_dev(&k_peer, "FLOSS Dongle", -30, true);
+    add_sim_dev(&k_stranger, "FLOSS Dongle", -70, true);
+}
+
+TEST(classic_no_keys_pad_calls_first) {
+    /* Told whom to call: that dongle is paged straight away, with no search, though a stronger
+     * one is about, and nothing is stored. */
+    g_call_first = &k_stranger;
+    g_before_start = two_dongles_about;
+    start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, tweak_pad_session_only);
+    wait_session_to(&k_stranger);
+    ASSERT_EQ(floss_sim_inquiry_count(), 0u);
+    ASSERT_FALSE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, NULL));
+    floss_tc_assert_sim_clean();
+}
+
 static void tweak_pad_2ms(floss_link_config_t *cfg) {
     cfg->report_interval_us = 2000;
 }
@@ -1375,6 +1427,8 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(classic_dongle_reconnects),
     TEST_CASE(classic_dongle_ping_rtt_and_malformed),
     TEST_CASE(classic_pad_connects_to_dongle),
+    TEST_CASE(classic_no_keys_pad_session_only),
+    TEST_CASE(classic_no_keys_pad_calls_first),
     TEST_CASE(classic_dongle_waits_for_pad),
     TEST_CASE(classic_no_keys_dongle_takes_any_pad),
     TEST_CASE(classic_no_keys_pad_prefers_remembered_then_strongest),

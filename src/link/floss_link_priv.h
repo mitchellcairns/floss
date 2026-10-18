@@ -137,6 +137,8 @@ typedef struct {
 bool floss_link_peer_get(floss_link_peer_t *out);
 /** Remember a new peer (persisted). */
 void floss_link_peer_set(uint8_t addr_type, const floss_addr_t *addr);
+/** The peer for this session only (Classic, not persisted). */
+void floss_link_peer_use(const floss_addr_t *addr);
 /** Forget the peer record (persisted). */
 void floss_link_peer_clear(void);
 
