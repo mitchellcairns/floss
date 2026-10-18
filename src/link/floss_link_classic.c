@@ -169,6 +169,10 @@ static bool accept_peer(const floss_addr_t *addr) {
 /* ------------------------------------------------------------------------ */
 
 static void wait_apply_scan(floss_link_state_t st) {
+    if (floss_link_held()) {
+        floss_gap_set_scan(false, false); /* hold: not connectable either */
+        return;
+    }
     bool pairing = st == FLOSS_LINK_STATE_PAIRING;
     floss_gap_set_scan(pairing, pairing || st == FLOSS_LINK_STATE_CONNECTING);
 }

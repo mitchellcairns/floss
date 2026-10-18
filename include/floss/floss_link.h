@@ -246,11 +246,11 @@ floss_err_t floss_link_afh_relearn(void);
 floss_err_t floss_link_forget(void);
 
 /**
- * Hold off connecting: no pages, no inquiry, until released (a page in
- * progress is cancelled). A link already up stays up. For an application
- * that needs the air for something else for a while (an LE session beside
- * a Classic link that keeps paging starves it). Releasing goes back to the
- * rest state (reconnect / search), from a fresh back-off. Classic only.
+ * Hold off connecting: no pages, inquiry or scans until released (a page or
+ * inquiry in progress is cancelled). A link already up stays up. For an
+ * application that wants the air for something else meanwhile, such as an LE
+ * connection. Releasing goes back to the rest state (reconnect / search),
+ * from a fresh back-off. Classic only.
  */
 floss_err_t floss_link_hold(bool hold);
 
