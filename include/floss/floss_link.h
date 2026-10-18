@@ -246,6 +246,14 @@ floss_err_t floss_link_afh_relearn(void);
 floss_err_t floss_link_forget(void);
 
 /**
+ * The peer remembered for this transport, read straight from the HAL store:
+ * usable before floss_init() / floss_link_init(), for an application that
+ * decides whether to bring the link up at all. addr may be NULL. False when
+ * none is stored.
+ */
+bool floss_link_stored_peer(floss_link_transport_t transport, floss_addr_t *addr);
+
+/**
  * Hold off connecting: no pages, inquiry or scans until released (a page or
  * inquiry in progress is cancelled). A link already up stays up. For an
  * application that wants the air for something else meanwhile, such as an LE

@@ -253,29 +253,41 @@ bool floss_link_inflight_ok(uint16_t handle) {
 /* Peer record                                                              */
 /* ------------------------------------------------------------------------ */
 
-static void peer_load(void) {
+/** The stored peer record, if it is one for this transport. */
+static bool peer_read(floss_link_transport_t transport, floss_link_peer_t *out) {
     uint8_t rec[LINK_PEER_REC_LEN + 1]; /* +1 detects oversized records */
     int n = floss_hal_store_read(FLOSS_LINK_STORE_KEY_PEER, rec, sizeof(rec));
-    L.have_peer = false;
     if (n <= 0) {
-        return;
+        return false;
     }
     if (n != LINK_PEER_REC_LEN || rec[0] != LINK_PEER_REC_VERSION) {
         FLOSS_LOGW(LINK, "peer record unreadable (len %d), ignored", n);
-        return;
+        return false;
     }
-    if (rec[1] != (uint8_t)L.cfg->transport) {
+    if (rec[1] != (uint8_t)transport) {
         /* Paired over the other technology: keep the record, but it is not ours. */
         FLOSS_LOGI(LINK, "stored peer belongs to the %s transport, ignored", rec[1] ? "LE" : "Classic");
-        return;
+        return false;
     }
-    L.peer.transport = rec[1];
-    L.peer.addr_type = rec[2];
-    memcpy(L.peer.addr.b, &rec[3], 6);
-    if (floss_addr_is_zero(&L.peer.addr)) {
-        return;
+    out->transport = rec[1];
+    out->addr_type = rec[2];
+    memcpy(out->addr.b, &rec[3], 6);
+    return !floss_addr_is_zero(&out->addr);
+}
+
+static void peer_load(void) {
+    L.have_peer = peer_read(L.cfg->transport, &L.peer);
+}
+
+bool floss_link_stored_peer(floss_link_transport_t transport, floss_addr_t *addr) {
+    floss_link_peer_t peer;
+    if (!peer_read(transport, &peer)) {
+        return false;
     }
-    L.have_peer = true;
+    if (addr) {
+        *addr = peer.addr;
+    }
+    return true;
 }
 
 bool floss_link_peer_get(floss_link_peer_t *out) {

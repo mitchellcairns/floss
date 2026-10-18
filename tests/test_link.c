@@ -335,6 +335,7 @@ TEST(classic_pad_flow) {
     start_link(FLOSS_LINK_ROLE_PAD, FLOSS_LINK_CLASSIC, NULL);
     /* No peer yet: pairing mode = discoverable + connectable, gamepad CoD, EIR with the link UUID. */
     ASSERT_EQ(floss_link_state(), FLOSS_LINK_STATE_PAIRING);
+    ASSERT_FALSE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, NULL));
     ASSERT_EQ(floss_sim_scan_enable(), 0x03);
     ASSERT_EQ(floss_sim_class_of_device(), FLOSS_COD_GAMEPAD);
     ASSERT_STR_EQ(floss_sim_local_name(), "FLOSS Pad");
@@ -354,6 +355,10 @@ TEST(classic_pad_flow) {
     uint8_t rec[16];
     ASSERT_EQ(floss_hal_store_read(FLOSS_LINK_STORE_KEY_PEER, rec, sizeof rec), 9);
     ASSERT_MEM_EQ(&rec[3], k_peer.b, 6);
+    floss_addr_t stored;
+    ASSERT_TRUE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, &stored));
+    ASSERT_TRUE(floss_addr_eq(&stored, &k_peer));
+    ASSERT_FALSE(floss_link_stored_peer(FLOSS_LINK_LE, NULL)); /* paired over Classic only */
 
     /* HELLO first. */
     uint8_t pdu[128];
