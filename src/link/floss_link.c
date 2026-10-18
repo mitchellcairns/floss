@@ -297,6 +297,15 @@ bool floss_link_peer_get(floss_link_peer_t *out) {
     return L.have_peer;
 }
 
+static floss_err_t peer_write(floss_link_transport_t transport, uint8_t addr_type, const floss_addr_t *addr) {
+    uint8_t rec[LINK_PEER_REC_LEN];
+    rec[0] = LINK_PEER_REC_VERSION;
+    rec[1] = (uint8_t)transport;
+    rec[2] = addr_type;
+    memcpy(&rec[3], addr->b, 6);
+    return floss_hal_store_write(FLOSS_LINK_STORE_KEY_PEER, rec, sizeof(rec));
+}
+
 void floss_link_peer_set(uint8_t addr_type, const floss_addr_t *addr) {
     if (L.have_peer && L.peer.addr_type == addr_type && floss_addr_eq(&L.peer.addr, addr)) {
         return; /* unchanged: no flash write */
@@ -306,12 +315,7 @@ void floss_link_peer_set(uint8_t addr_type, const floss_addr_t *addr) {
     L.peer.addr = *addr;
     L.have_peer = true;
 
-    uint8_t rec[LINK_PEER_REC_LEN];
-    rec[0] = LINK_PEER_REC_VERSION;
-    rec[1] = L.peer.transport;
-    rec[2] = addr_type;
-    memcpy(&rec[3], addr->b, 6);
-    floss_err_t err = floss_hal_store_write(FLOSS_LINK_STORE_KEY_PEER, rec, sizeof(rec));
+    floss_err_t err = peer_write(L.cfg->transport, addr_type, addr);
     char s[18];
     floss_addr_to_str(addr, s);
     if (err != FLOSS_OK) {
@@ -319,6 +323,17 @@ void floss_link_peer_set(uint8_t addr_type, const floss_addr_t *addr) {
     } else {
         FLOSS_LOGI(LINK, "paired with %s %s", L.pad ? "dongle" : "pad", s);
     }
+}
+
+floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const floss_addr_t *addr) {
+    if (!addr || floss_addr_is_zero(addr)) {
+        return FLOSS_ERR_INVALID;
+    }
+    floss_addr_t stored;
+    if (floss_link_stored_peer(transport, &stored) && floss_addr_eq(&stored, addr)) {
+        return FLOSS_OK; /* unchanged: no flash write */
+    }
+    return peer_write(transport, 0, addr);
 }
 
 void floss_link_peer_clear(void) {

@@ -254,6 +254,14 @@ floss_err_t floss_link_forget(void);
 bool floss_link_stored_peer(floss_link_transport_t transport, floss_addr_t *addr);
 
 /**
+ * Remember this peer before floss_link_init(), as if it had connected: the
+ * connecting side then calls it first (an application that heard the peer
+ * announce itself some other way, such as an LE beacon). Classic addresses;
+ * no keys are stored.
+ */
+floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const floss_addr_t *addr);
+
+/**
  * Hold off connecting: no pages, inquiry or scans until released (a page or
  * inquiry in progress is cancelled). A link already up stays up. For an
  * application that wants the air for something else meanwhile, such as an LE
