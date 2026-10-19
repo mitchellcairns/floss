@@ -340,6 +340,14 @@ floss_err_t floss_link_call_first(const floss_addr_t *addr) {
     return FLOSS_OK;
 }
 
+floss_err_t floss_link_forget_stored(floss_link_transport_t transport) {
+    if (!floss_link_stored_peer(transport, NULL)) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    floss_hal_store_delete(FLOSS_LINK_STORE_KEY_PEER);
+    return FLOSS_OK;
+}
+
 floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const floss_addr_t *addr) {
     if (!addr || floss_addr_is_zero(addr)) {
         return FLOSS_ERR_INVALID;

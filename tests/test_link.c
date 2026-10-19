@@ -379,6 +379,12 @@ TEST(classic_pad_flow) {
     ASSERT_TRUE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, &stored));
     ASSERT_TRUE(floss_addr_eq(&stored, &k_stranger));
     ASSERT_EQ(floss_link_remember_peer(FLOSS_LINK_CLASSIC, &k_peer), FLOSS_OK);
+    /* Forgetting it from the store: gone, and the LE side has nothing to forget */
+    ASSERT_EQ(floss_link_forget_stored(FLOSS_LINK_LE), FLOSS_ERR_NOT_FOUND);
+    ASSERT_EQ(floss_link_forget_stored(FLOSS_LINK_CLASSIC), FLOSS_OK);
+    ASSERT_FALSE(floss_link_stored_peer(FLOSS_LINK_CLASSIC, NULL));
+    ASSERT_EQ(floss_link_forget_stored(FLOSS_LINK_CLASSIC), FLOSS_ERR_NOT_FOUND);
+    ASSERT_EQ(floss_link_remember_peer(FLOSS_LINK_CLASSIC, &k_peer), FLOSS_OK);
 
     /* HELLO first. */
     uint8_t pdu[128];

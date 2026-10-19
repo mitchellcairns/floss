@@ -278,6 +278,14 @@ floss_err_t floss_link_remember_peer(floss_link_transport_t transport, const flo
 floss_err_t floss_link_call_first(const floss_addr_t *addr);
 
 /**
+ * Forget the peer remembered for this transport, in the HAL store only, like
+ * floss_link_remember_peer(): usable with the stack down. A link running now
+ * keeps its session; the next floss_link_init() starts without the peer.
+ * NOT_FOUND when none is stored.
+ */
+floss_err_t floss_link_forget_stored(floss_link_transport_t transport);
+
+/**
  * Hold off connecting: no pages, inquiry or scans until released (a page or
  * inquiry in progress is cancelled). A link already up stays up. For an
  * application that wants the air for something else meanwhile, such as an LE
