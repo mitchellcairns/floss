@@ -274,6 +274,12 @@ const floss_bond_t *floss_gap_bond_find(const floss_addr_t *addr);
 floss_err_t floss_gap_bond_add(const floss_addr_t *addr, const floss_link_key_t *key);
 floss_err_t floss_gap_bond_delete(const floss_addr_t *addr);
 floss_err_t floss_gap_bond_delete_all(void);
+/**
+ * Forget a host: every bond with it, under any local address, whether the
+ * stack loaded them this boot or they are only stored (it need not be
+ * running). NOT_FOUND when there were none.
+ */
+floss_err_t floss_gap_bond_forget(const floss_addr_t *addr);
 
 /* ------------------------------------------------------------------------ */
 /* Link policy / power / latency                                            */

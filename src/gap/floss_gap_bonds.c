@@ -305,6 +305,48 @@ floss_err_t floss_gap_bond_delete(const floss_addr_t *addr)
     return FLOSS_OK;
 }
 
+floss_err_t floss_gap_bond_forget(const floss_addr_t *addr)
+{
+    if (!addr) {
+        return FLOSS_ERR_INVALID;
+    }
+    bool found = false;
+    for (int i = 0; i < FLOSS_MAX_BONDS; i++) {
+        bool match = s_bonds.used[i] && floss_addr_eq(&s_bonds.bond[i].addr, addr);
+        if (!match) {
+            /* Not loaded (the stack has not run this boot): the stored record decides */
+            uint8_t rec[FLOSS_GAP_BOND_REC_LEN + 1];
+            int n = floss_hal_store_read((uint16_t)(FLOSS_STORE_KEY_BOND_BASE + i), rec, sizeof(rec));
+            floss_bond_t b;
+            match = (n > 0) && floss_gap_bond_decode(rec, n, &b) && floss_addr_eq(&b.addr, addr);
+        }
+        if (!match) {
+            continue;
+        }
+        s_bonds.used[i] = false;
+        memset(&s_bonds.bond[i], 0, sizeof(s_bonds.bond[i]));
+        floss_hal_store_delete((uint16_t)(FLOSS_STORE_KEY_BOND_BASE + i));
+        found = true;
+    }
+    if (!found) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+
+    /* The last host record follows the loaded bonds; with none loaded, only drop it if it was this host */
+    uint8_t last[6];
+    if (floss_gap_bond_count()) {
+        bond_record_last_host();
+    } else if (floss_hal_store_read(FLOSS_STORE_KEY_LAST_HOST, last, sizeof(last)) == (int)sizeof(last) &&
+               !memcmp(last, addr->b, sizeof(last))) {
+        floss_hal_store_delete(FLOSS_STORE_KEY_LAST_HOST);
+    }
+
+    char s[18];
+    floss_addr_to_str(addr, s);
+    FLOSS_LOGI(GAP, "host %s forgotten", s);
+    return FLOSS_OK;
+}
+
 floss_err_t floss_gap_bond_delete_all(void)
 {
     for (int i = 0; i < FLOSS_MAX_BONDS; i++) {

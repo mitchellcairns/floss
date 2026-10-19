@@ -369,6 +369,41 @@ TEST(bonds_keyed_by_address_pair) {
     ASSERT_NOT_NULL(floss_gap_bond_last());
 }
 
+/* Forgetting a host takes every bond with it, loaded or only stored, and nothing else. */
+TEST(bond_forget_host) {
+    const floss_addr_t local_a = {{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x02}};
+    const floss_addr_t local_b = {{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0x02}};
+    const floss_addr_t peer = {{0x03, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}};
+    const floss_addr_t other = {{0x04, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}};
+    floss_link_key_t key = {{0xCC}, 0x07};
+
+    floss_test_store_reset();
+    start_as(&local_a);
+    ASSERT_EQ(floss_gap_bond_add(&peer, &key), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_add(&other, &key), FLOSS_OK);
+    start_as(&local_b);
+    ASSERT_EQ(floss_gap_bond_add(&peer, &key), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_count(), 3);
+
+    /* Both of the host's bonds go, under either local address; the other host's stays. */
+    uint8_t rec[64];
+    int n = floss_hal_store_read(FLOSS_STORE_KEY_BOND_BASE, rec, sizeof rec); /* the first: peer under A */
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(floss_gap_bond_forget(&peer), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_count(), 1);
+    ASSERT_EQ(floss_gap_bond_forget(&peer), FLOSS_ERR_NOT_FOUND);
+
+    /* A record the stack never loaded (written behind its back) is found in the store. */
+    ASSERT_EQ(floss_hal_store_write(FLOSS_STORE_KEY_BOND_BASE, rec, (uint16_t)n), FLOSS_OK);
+    ASSERT_EQ(floss_gap_bond_forget(&peer), FLOSS_OK);
+    ASSERT_TRUE(floss_hal_store_read(FLOSS_STORE_KEY_BOND_BASE, rec, sizeof rec) <= 0);
+
+    start_as(&local_a);
+    ASSERT_EQ(floss_gap_bond_count(), 1);
+    ASSERT_NULL(floss_gap_bond_find(&peer));
+    ASSERT_NOT_NULL(floss_gap_bond_find(&other));
+}
+
 /* Records written before bonds carried the local address match any address. */
 TEST(bond_record_v1_matches_any_local_address) {
     const floss_addr_t peer = {{0x02, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA}};
@@ -390,6 +425,7 @@ TEST(bond_record_v1_matches_any_local_address) {
 
 static const floss_test_case_t tests[] = {
     TEST_CASE(bonds_keyed_by_address_pair),
+    TEST_CASE(bond_forget_host),
     TEST_CASE(bond_record_v1_matches_any_local_address),
     TEST_CASE(bringup_reaches_ready),
     TEST_CASE(first_pairing_session),
