@@ -309,6 +309,14 @@ typedef struct {
  */
 uint16_t floss_gatt_register(const floss_gatt_attr_t *table, uint16_t count);
 
+/**
+ * Empty the database, the stack's own GAP and GATT services included, so the
+ * next table registered starts at handle 1: for a peer that expects another
+ * device's exact handles (the table then carries its own GAP service). Only
+ * while no link is up.
+ */
+void floss_gatt_clear(void);
+
 /** Attribute for an absolute handle, NULL if out of range. */
 const floss_gatt_attr_t *floss_gatt_attr(uint16_t handle);
 /** Highest handle in use (0 if empty). */

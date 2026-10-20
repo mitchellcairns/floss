@@ -218,6 +218,7 @@ typedef struct {
     floss_addr_t local_addr;
     int8_t bond;             /* s_bonds index for this peer, -1 none */
     int8_t enc_bond;         /* bond whose LTK the pending encryption uses, -1 none */
+    bool enc_provided;       /* the pending encryption uses the LTK provider's key */
     floss_timer_t timer;     /* SMP transaction timeout */
     smp_pairing_t p;
 } smp_conn_t;
@@ -237,6 +238,9 @@ static struct {
 static floss_smp_bond_t s_bonds[FLOSS_MAX_BONDS];
 static bool s_bond_valid[FLOSS_MAX_BONDS];
 static uint32_t s_bond_seq; /* highest seq in use */
+
+static floss_smp_ltk_fn s_ltk_fn;
+static void *s_ltk_user;
 
 static uint8_t s_irk[16];
 static bool s_local_addr_set;
@@ -894,11 +898,21 @@ static void smp_on_ltk_request(const uint8_t *params, uint8_t len) {
         }
     }
     if (idx < 0) {
+        uint8_t ltk[16];
+        if (s_ltk_fn && s_ltk_fn(handle, ediv, rand, ltk, s_ltk_user)) {
+            if (c) {
+                c->enc_bond = -1;
+                c->enc_provided = true;
+            }
+            smp_ltk_reply(handle, ltk);
+            return;
+        }
         FLOSS_LOGI(SMP, "SMP %u: no key for LTK request (ediv 0x%04x)", handle, ediv);
         smp_ltk_neg_reply(handle);
         return;
     }
     c->enc_bond = (int8_t)idx;
+    c->enc_provided = false;
     smp_ltk_reply(handle, s_bonds[idx].ltk);
 }
 
@@ -1715,7 +1729,9 @@ void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted) {
     }
 
     int8_t idx = c->enc_bond;
+    bool provided = c->enc_provided;
     c->enc_bond = -1;
+    c->enc_provided = false;
     if (status != FLOSS_HCI_SUCCESS) {
         /* e.g. 0x06 PIN or Key Missing: the peer lost its bond with us. */
         FLOSS_LOGW(SMP, "SMP %u: encryption failed (0x%02x)", handle, status);
@@ -1731,6 +1747,10 @@ void floss_smp_on_encryption(uint16_t handle, uint8_t status, bool encrypted) {
         smp_set_level(c, smp_bond_level(&s_bonds[idx]));
         smp_bond_touch((unsigned)idx);
         FLOSS_LOGI(SMP, "SMP %u: encrypted with bond, level %u", handle, c->level);
+        smp_emit_simple(FLOSS_SMP_EVT_SECURITY_CHANGED, c);
+    } else if (provided) {
+        smp_set_level(c, 2);
+        FLOSS_LOGI(SMP, "SMP %u: encrypted with a provided key", handle);
         smp_emit_simple(FLOSS_SMP_EVT_SECURITY_CHANGED, c);
     }
     /* else: key refresh with the same key, nothing changes */
@@ -1775,6 +1795,11 @@ void floss_smp_set_local_addr(uint8_t type, const floss_addr_t *addr) {
 
 const uint8_t *floss_smp_local_irk(void) {
     return s_irk;
+}
+
+void floss_smp_set_ltk_provider(floss_smp_ltk_fn fn, void *user) {
+    s_ltk_fn = fn;
+    s_ltk_user = user;
 }
 
 floss_err_t floss_smp_add_listener(floss_smp_evt_fn fn, void *user) {

@@ -183,6 +183,12 @@ uint16_t floss_gatt_battery_handle(void) {
 /* Init                                                                     */
 /* ------------------------------------------------------------------------ */
 
+void floss_gatt_clear(void) {
+    floss_gatt_init();
+    s_dis_registered = false;
+    s_battery_handle = 0;
+}
+
 void floss_gatt_services_register_core(void) {
     memset(&s_service_changed_cccd, 0, sizeof(s_service_changed_cccd));
     memset(&s_battery_cccd, 0, sizeof(s_battery_cccd));

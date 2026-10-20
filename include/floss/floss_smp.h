@@ -173,6 +173,16 @@ floss_err_t floss_smp_request_security(uint16_t handle);
 /** Current security level of a link (1..4), 0 if the handle is unknown. */
 uint8_t floss_smp_security_level(uint16_t handle);
 
+/**
+ * Key for an LTK request that no bond answers: a key agreed outside SMP (e.g.
+ * over a vendor protocol). Fill ltk (wire order, LSB first) and return true to
+ * answer with it; false sends the negative reply. A link encrypted this way is
+ * level 2. One provider; NULL removes it.
+ */
+typedef bool (*floss_smp_ltk_fn)(uint16_t handle, uint16_t ediv, const uint8_t rand[8], uint8_t ltk[16],
+                                 void *user);
+void floss_smp_set_ltk_provider(floss_smp_ltk_fn fn, void *user);
+
 /* ------------------------------------------------------------------------ */
 /* Bond database                                                            */
 /* ------------------------------------------------------------------------ */
