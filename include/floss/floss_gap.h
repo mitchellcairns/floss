@@ -347,6 +347,19 @@ typedef void (*floss_gap_afh_map_fn)(uint16_t handle, uint8_t status, uint8_t af
 /** Read the hopping map a link uses right now (HCI Read AFH Channel Map). */
 floss_err_t floss_gap_read_afh_map(uint16_t handle, floss_gap_afh_map_fn fn, void *user);
 
+/**
+ * Result of floss_gap_read_clock: the clock in half slots (312.5 us ticks, 28 bits), and for the
+ * piconet clock its accuracy in the same ticks (0xFFFF unknown).
+ */
+typedef void (*floss_gap_clock_fn)(uint16_t handle, uint8_t status, uint32_t clock, uint16_t accuracy, void *user);
+/**
+ * Read a clock (HCI Read Clock): which = 1 the piconet clock of the link `handle` (the central's,
+ * as this controller follows it), which = 0 our own native clock. For timing traffic to the
+ * central's slots; the controller reads the clock somewhere between sending the command and its
+ * answer. One read at a time.
+ */
+floss_err_t floss_gap_read_clock(uint16_t handle, uint8_t which, floss_gap_clock_fn fn, void *user);
+
 /** Request a role switch (0 = become central, 1 = become peripheral). */
 floss_err_t floss_gap_switch_role(uint16_t handle, uint8_t role);
 

@@ -751,6 +751,48 @@ floss_err_t floss_gap_read_afh_map(uint16_t handle, floss_gap_afh_map_fn fn, voi
     return err;
 }
 
+typedef struct {
+    floss_gap_clock_fn fn;
+    void *user;
+    uint16_t handle;
+} clock_read_t;
+static clock_read_t s_clock_read;
+
+static void clock_read_done(void *ctx, uint16_t opcode, uint8_t status, const uint8_t *ret, uint16_t len)
+{
+    (void)opcode;
+    clock_read_t *r = (clock_read_t *)ctx;
+    /* Return parameters after status: handle(2) clock(4) accuracy(2). */
+    bool ok = status == FLOSS_HCI_SUCCESS && ret != NULL && len >= 8;
+    floss_gap_clock_fn fn = r->fn;
+    r->fn = NULL;
+    if (fn) {
+        fn(r->handle, ok ? 0 : (status ? status : FLOSS_HCI_ERR_UNSPECIFIED),
+           ok ? (floss_get_le32(&ret[2]) & 0x0FFFFFFFu) : 0, ok ? floss_get_le16(&ret[6]) : 0xFFFFu, r->user);
+    }
+}
+
+floss_err_t floss_gap_read_clock(uint16_t handle, uint8_t which, floss_gap_clock_fn fn, void *user)
+{
+    if (which && !classic_conn(handle)) {
+        return FLOSS_ERR_NOT_FOUND;
+    }
+    if (s_clock_read.fn) {
+        return FLOSS_ERR_BUSY;
+    }
+    uint8_t p[3];
+    floss_put_le16(p, which ? handle : 0);
+    p[2] = which ? 1 : 0;
+    s_clock_read.fn = fn;
+    s_clock_read.user = user;
+    s_clock_read.handle = handle;
+    floss_err_t err = floss_hci_cmd(FLOSS_HCI_READ_CLOCK, p, sizeof p, clock_read_done, &s_clock_read);
+    if (err != FLOSS_OK) {
+        s_clock_read.fn = NULL;
+    }
+    return err;
+}
+
 floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate)
 {
     if (!classic_conn(handle)) {
