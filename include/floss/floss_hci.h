@@ -112,6 +112,7 @@ extern "C" {
 
 /* Status (OGF 0x05) */
 #define FLOSS_HCI_READ_AFH_CHANNEL_MAP         FLOSS_OPCODE(0x05, 0x0006)
+#define FLOSS_HCI_READ_CLOCK                   FLOSS_OPCODE(0x05, 0x0007)
 #define FLOSS_HCI_READ_RSSI                    FLOSS_OPCODE(0x05, 0x0005)
 
 /* ------------------------------------------------------------------------ */
