@@ -414,6 +414,8 @@ void floss_gap_on_hci_ready(void)
 
 void (*floss_gap_pre_ready_hook)(void);
 
+static void link_reads_reset(void);
+
 void floss_gap_init(void)
 {
     floss_gap_pre_ready_hook = NULL;
@@ -427,6 +429,7 @@ void floss_gap_init(void)
     s_gap.default_policy = FLOSS_LINK_POLICY_ROLE_SWITCH | FLOSS_LINK_POLICY_SNIFF;
     floss_timer_init(&s_gap.retry_timer, ready_retry, NULL);
     floss_timer_init(&s_gap.scan_timer, scan_retry, NULL);
+    link_reads_reset();
 
     floss_gap_sec_init();
     floss_gap_eir_init();
@@ -791,6 +794,16 @@ floss_err_t floss_gap_read_clock(uint16_t handle, uint8_t which, floss_gap_clock
         s_clock_read.fn = NULL;
     }
     return err;
+}
+
+/*
+ * A restart drops the answers to reads still in flight, so their callbacks never run. Left set,
+ * every later read would be refused as busy until a reboot.
+ */
+static void link_reads_reset(void)
+{
+    memset(&s_afh_read, 0, sizeof(s_afh_read));
+    memset(&s_clock_read, 0, sizeof(s_clock_read));
 }
 
 floss_err_t floss_gap_qos_setup(uint16_t handle, uint32_t latency_us, uint32_t token_rate)
