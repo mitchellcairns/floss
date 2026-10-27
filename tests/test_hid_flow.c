@@ -213,6 +213,40 @@ TEST(stack_initiated_pairing) {
     floss_tc_assert_sim_clean();
 }
 
+static void clock_read_cb(uint16_t handle, uint8_t status, uint32_t clock, uint16_t accuracy, void *user) {
+    (void)handle;
+    (void)status;
+    (void)clock;
+    (void)accuracy;
+    (void)user;
+}
+
+static void afh_read_cb(uint16_t handle, uint8_t status, uint8_t mode, const uint8_t map[10], void *user) {
+    (void)handle;
+    (void)status;
+    (void)mode;
+    (void)map;
+    (void)user;
+}
+
+/* The controller resets with reads in flight (a crash, a radio restart): their answers never come,
+ * and the restarted stack must still take new ones. */
+TEST(gap_reads_after_restart) {
+    floss_transport_t *t = floss_tc_sim_init(NULL);
+    floss_tc_hid_config(&g_cfg, 1000);
+    floss_tc_stack_start(t, &g_cfg);
+    uint16_t h = floss_tc_host_connect();
+    ASSERT_EQ(floss_gap_read_clock(h, 1, clock_read_cb, NULL), FLOSS_OK);
+    ASSERT_EQ(floss_gap_read_afh_map(h, afh_read_cb, NULL), FLOSS_OK);
+    ASSERT_EQ(floss_gap_read_clock(h, 1, clock_read_cb, NULL), FLOSS_ERR_BUSY);
+
+    t = floss_tc_sim_init(NULL);
+    floss_tc_stack_start(t, &g_cfg);
+    h = floss_tc_host_connect();
+    ASSERT_EQ(floss_gap_read_clock(h, 1, clock_read_cb, NULL), FLOSS_OK);
+    ASSERT_EQ(floss_gap_read_afh_map(h, afh_read_cb, NULL), FLOSS_OK);
+}
+
 TEST(reconnect_after_reboot) {
     floss_transport_t *t = floss_tc_sim_init(NULL);
     floss_tc_hid_config(&g_cfg, 1000);
@@ -430,6 +464,7 @@ static const floss_test_case_t tests[] = {
     TEST_CASE(bringup_reaches_ready),
     TEST_CASE(first_pairing_session),
     TEST_CASE(stack_initiated_pairing),
+    TEST_CASE(gap_reads_after_restart),
     TEST_CASE(reconnect_after_reboot),
     TEST_CASE(reconnect_host_absent_page_timeout),
     TEST_CASE(app_link_to_host_kept),
